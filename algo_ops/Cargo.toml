@@ -6,6 +6,9 @@ description = "Algorand implementation of the blockchain_ops traits, over algona
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/richdrich/blockchain_ops_rust"
 publish = false
+# Test targets are declared explicitly below (per project guidelines: every test
+# is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
+autotests = false
 
 [dependencies]
 blockchain_ops = { path = "../blockchain_ops" }
@@ -22,5 +25,24 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
+[dev-dependencies]
+# Simple test-writer logging in the ported test-support helper.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
 [lints]
 workspace = true
+
+# ── Test targets ─────────────────────────────────────────────────────────────
+# Two buckets, after the bingle_rust pattern:
+#   `unit`        — AlgoOps tests that need no running node; run by `cargo test`.
+#   `integration` — localnet/dapp tests, all `#[ignore]`d; require algokit
+#                   localnet. Run with `cargo test --test integration -- --ignored`.
+# (Wiring CI to run the integration bucket is tracked separately.)
+
+[[test]]
+name = "unit"
+path = "tests/unit.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
