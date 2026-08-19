@@ -1,5 +1,6 @@
 //! Localnet integration test: a plain `create_asset` sets manager to the creator.
-//! Requires algokit localnet; `#[ignore]`d by default (run with `-- --ignored`).
+//! Requires algokit localnet; in the `integration` target (run with
+//! `cargo test --test integration`).
 
 use crate::support::setup_localnet;
 use crate::support::test_util::{
@@ -9,7 +10,6 @@ use algo_ops::AlgoChainConfig;
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn asset_creation_sets_manager_to_creator() {
     test_util::assert_localnet_available();
 

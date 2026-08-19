@@ -1,6 +1,6 @@
 //! Localnet integration tests for AlgoOps read paths (formerly bingle_core's
-//! `algo_ops_integration_localnet.rs`). Requires a running algokit localnet, so
-//! every test is `#[ignore]`d by default; run with `cargo test -- --ignored`.
+//! `algo_ops_integration_localnet.rs`). In the `integration` target, which a bare
+//! `cargo test` skips; run with `cargo test --test integration`.
 
 use crate::support::setup_localnet;
 use crate::support::test_util::{self, ADDRESS_10MIL, localnet_config};
@@ -22,11 +22,10 @@ fn fund_test_accounts_or_panic() {
 // How to run these integration tests:
 // - Ensure algokit localnet (or another local Algorand node) is running at http://localhost:4001
 //   with token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.
-// - Run `cargo test -- --ignored`. The tests fail if localnet is not available.
+// - Run `cargo test --test integration`. The tests fail if localnet is not available.
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn account_balance_for_address10mil_returns_some() {
     test_util::assert_localnet_available();
     fund_test_accounts_or_panic();
@@ -44,7 +43,6 @@ pub fn account_balance_for_address10mil_returns_some() {
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn global_state_for_address10mil_returns_some_vec() {
     test_util::assert_localnet_available();
     fund_test_accounts_or_panic();
@@ -61,7 +59,6 @@ pub fn global_state_for_address10mil_returns_some_vec() {
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn algo_ops_integration_localnet_placeholder() {
     test_util::assert_localnet_available();
     // Keep placeholder light to avoid duplicating other tests.

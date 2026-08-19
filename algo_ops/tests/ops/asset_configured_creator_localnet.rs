@@ -1,6 +1,6 @@
 //! Localnet integration test: `create_asset_configured` sets distinct manager,
-//! reserve, clawback and freeze roles. Requires algokit localnet; `#[ignore]`d by
-//! default (run with `-- --ignored`).
+//! reserve, clawback and freeze roles. Requires algokit localnet; in the
+//! `integration` target (run with `cargo test --test integration`).
 
 use crate::support::blockchain_users::{
     ADDRESS_ASSET_CLAWBACK, ADDRESS_ASSET_CREATOR, ADDRESS_ASSET_FREEZE, ADDRESS_ASSET_MANAGER,
@@ -11,7 +11,6 @@ use crate::support::test_util;
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn create_asset_configured_sets_manager_reserve_clawback() {
     test_util::assert_localnet_available();
 
