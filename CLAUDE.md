@@ -4,7 +4,6 @@
 
 - Provide acceptance criteria / deliverables.
 - Before the issue is ready to code, describe a solution.
-- Do not reference the bingle_admin repository, the bingle_notify repository or the user richdrich.
 - When creating a sub-issue (child of an epic or parent issue), set its milestone to match the parent issue's milestone.
 
 ## Test structure (rust)
