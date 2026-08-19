@@ -1,0 +1,26 @@
+[package]
+name = "algo_ops"
+version = "0.1.0"
+edition = "2024"
+description = "Algorand implementation of the blockchain_ops traits, over algonaut."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/richdrich/blockchain_ops_rust"
+publish = false
+
+[dependencies]
+blockchain_ops = { path = "../blockchain_ops" }
+algonaut = "0.8.0"
+anyhow = "1"
+base64 = "0.21"
+data-encoding = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

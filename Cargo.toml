@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = [
+    "blockchain_ops",
+    "algo_ops",
+]
+
+# Clippy backlog, silenced centrally so the quality gate can pass while it is
+# burned down. Mirrors the bingle_rust workspace configuration. Members opt in
+# with `[lints] workspace = true`.
+[workspace.lints.clippy]
+# #33 doc-comment & literal formatting
+doc_overindented_list_items = "allow"
+doc_lazy_continuation = "allow"
+empty_line_after_doc_comments = "allow"
+empty_line_after_outer_attr = "allow"
+unusual_byte_groupings = "allow"
+legacy_numeric_constants = "allow"
+# #34 simplifiable control flow
+collapsible_if = "allow"
+collapsible_match = "allow"
+match_like_matches_macro = "allow"
+single_match = "allow"
+if_same_then_else = "allow"
+manual_range_contains = "allow"
+manual_contains = "allow"
+unnecessary_map_or = "allow"
+manual_unwrap_or_default = "allow"
+manual_unwrap_or = "allow"
+filter_next = "allow"
+# #35 redundant clones/conversions/allocations & misc style
+useless_vec = "allow"
+useless_conversion = "allow"
+clone_on_copy = "allow"
+needless_borrow = "allow"
+unnecessary_to_owned = "allow"
+explicit_auto_deref = "allow"
+to_string_in_format_args = "allow"
+unnecessary_get_then_check = "allow"
+needless_return = "allow"
+let_unit_value = "allow"
+default_constructed_unit_structs = "allow"
+manual_repeat_n = "allow"
+same_item_push = "allow"
+expect_fun_call = "allow"
+needless_range_loop = "allow"
+len_zero = "allow"
+# #36 type complexity (needs `type` aliases)
+type_complexity = "allow"
+# #37 API-signature / design lints
+too_many_arguments = "allow"
+new_without_default = "allow"
+len_without_is_empty = "allow"
+result_large_err = "allow"
+# #38 test-code lints
+bool_assert_comparison = "allow"
+assertions_on_constants = "allow"
+field_reassign_with_default = "allow"
+items_after_test_module = "allow"
+# #38 / #32 duplicate_mod is the shared-#[path] test module problem
+duplicate_mod = "allow"
