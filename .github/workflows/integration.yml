@@ -1,0 +1,87 @@
+name: algo_ops integration (localnet)
+
+# Exercises the `algo_ops` `integration` test bucket against algokit localnet.
+#
+# The `integration` target is declared `test = false` in `algo_ops/Cargo.toml`,
+# so a bare `cargo test` skips it and stays green without a node. This workflow
+# starts algokit localnet (Docker) and runs the bucket explicitly with
+# `cargo test -p algo_ops --test integration`.
+#
+# Triggers (localnet is slow and needs Docker, so it is kept off the fast path):
+#   - schedule:          nightly, so the localnet/dapp paths do not silently rot.
+#   - pull_request:      only when the PR carries the `localnet` label.
+#   - workflow_dispatch: manual runs from the Actions tab.
+on:
+  schedule:
+    # 06:00 UTC daily.
+    - cron: "0 6 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+# The fast path (plain `cargo test`, clippy, fmt) lives elsewhere and does not
+# need localnet; nothing here touches it.
+jobs:
+  integration:
+    name: cargo test --test integration
+    runs-on: ubuntu-latest
+    # Run on schedule and manual dispatch always; on pull requests only when the
+    # `localnet` label is present (Docker + localnet is too slow for every push).
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'localnet'))
+    timeout-minutes: 30
+    env:
+      # algokit localnet's fixed algod token (64 'a's), matching the tests'
+      # `LOCALNET_TOKEN` in `algo_ops/tests/support/test_util.rs`.
+      ALGOD_TOKEN: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install algokit
+        run: |
+          pipx install algokit
+          algokit --version
+
+      - name: Start algokit localnet
+        run: algokit localnet start
+
+      - name: Wait for algod on localhost:4001
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -H "X-Algo-API-Token: ${ALGOD_TOKEN}" \
+                 http://localhost:4001/v2/status >/dev/null; then
+              echo "algod is ready"
+              exit 0
+            fi
+            echo "waiting for algod (attempt ${i})..."
+            sleep 5
+          done
+          echo "algod did not become ready within the timeout"
+          exit 1
+
+      - name: Run integration bucket
+        run: cargo test -p algo_ops --test integration -- --nocapture
+
+      - name: Dump localnet logs on failure
+        if: failure()
+        run: |
+          echo "=== algokit localnet status ==="
+          algokit localnet status || true
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+          echo "=== algokit localnet logs ==="
+          algokit localnet logs || true
+
+      - name: Stop algokit localnet
+        if: always()
+        run: algokit localnet stop || true
