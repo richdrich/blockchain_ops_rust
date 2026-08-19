@@ -1,0 +1,112 @@
+#pragma version 8
+intcblock 0 1
+txn NumAppArgs
+intc_0 // 0
+==
+bnz main_l4
+txna ApplicationArgs 0
+pushbytes 0x47a9db0d // "fn(uint64)uint64"
+==
+bnz main_l3
+err
+main_l3:
+txn OnCompletion
+intc_0 // NoOp
+==
+txn ApplicationID
+intc_0 // 0
+!=
+&&
+assert
+callsub fncaster_3
+intc_1 // 1
+return
+main_l4:
+txn OnCompletion
+intc_0 // NoOp
+==
+bnz main_l10
+txn OnCompletion
+pushint 4 // UpdateApplication
+==
+bnz main_l9
+txn OnCompletion
+pushint 5 // DeleteApplication
+==
+bnz main_l8
+err
+main_l8:
+txn ApplicationID
+intc_0 // 0
+!=
+assert
+callsub deleteapp_2
+intc_1 // 1
+return
+main_l9:
+txn ApplicationID
+intc_0 // 0
+!=
+assert
+callsub updateapp_1
+intc_1 // 1
+return
+main_l10:
+txn ApplicationID
+intc_0 // 0
+==
+assert
+intc_1 // 1
+return
+
+// fn
+fn_0:
+proto 1 1
+intc_0 // 0
+frame_dig -1
+pushint 3 // 3
+*
+pushint 20 // 20
+-
+frame_bury 0
+retsub
+
+// update_app
+updateapp_1:
+proto 0 0
+txn Sender
+global CreatorAddress
+==
+// unauthorized
+assert
+intc_1 // 1
+return
+
+// delete_app
+deleteapp_2:
+proto 0 0
+txn Sender
+global CreatorAddress
+==
+// unauthorized
+assert
+intc_1 // 1
+return
+
+// fn_caster
+fncaster_3:
+proto 0 0
+intc_0 // 0
+dup
+txna ApplicationArgs 1
+btoi
+frame_bury 1
+frame_dig 1
+callsub fn_0
+frame_bury 0
+pushbytes 0x151f7c75 // 0x151f7c75
+frame_dig 0
+itob
+concat
+log
+retsub
