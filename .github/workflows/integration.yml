@@ -8,10 +8,13 @@ name: algo_ops integration (localnet)
 # `cargo test -p algo_ops --test integration`.
 #
 # Triggers (localnet is slow and needs Docker, so it is kept off the fast path):
+#   - push to master:    guard the mainline after every merge.
 #   - schedule:          nightly, so the localnet/dapp paths do not silently rot.
 #   - pull_request:      only when the PR carries the `localnet` label.
 #   - workflow_dispatch: manual runs from the Actions tab.
 on:
+  push:
+    branches: [master]
   schedule:
     # 06:00 UTC daily.
     - cron: "0 6 * * *"
@@ -19,15 +22,23 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+# Cancel a superseded run for the same ref (e.g. a new push to master, or a new
+# commit on a labelled PR) so stale localnet runs do not pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # The fast path (plain `cargo test`, clippy, fmt) lives elsewhere and does not
 # need localnet; nothing here touches it.
 jobs:
   integration:
     name: cargo test --test integration
     runs-on: ubuntu-latest
-    # Run on schedule and manual dispatch always; on pull requests only when the
-    # `localnet` label is present (Docker + localnet is too slow for every push).
+    # Run on push to master, schedule, and manual dispatch always; on pull
+    # requests only when the `localnet` label is present (Docker + localnet is
+    # too slow for every PR push).
     if: >-
+      github.event_name == 'push' ||
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
@@ -38,8 +49,10 @@ jobs:
       # `LOCALNET_TOKEN` in `algo_ops/tests/support/test_util.rs`.
       ALGOD_TOKEN: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     steps:
+      # Actions are pinned to majors whose runtime is Node 24 (Node 20 is EOL);
+      # dtolnay/rust-toolchain is a composite (shell) action with no Node runtime.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

@@ -41,9 +41,13 @@ The `integration` bucket runs in GitHub Actions
 (`.github/workflows/integration.yml`) against algokit localnet. It is kept off
 the fast per-push path because it needs Docker and is slow; it is triggered:
 
+- on every push to `master` (mainline guard),
 - nightly on a schedule,
 - on a pull request that carries the `localnet` label, and
 - manually via `workflow_dispatch` from the Actions tab.
+
+A superseded run for the same ref is cancelled (`concurrency`) so stale
+localnet runs do not pile up.
 
 [`algonaut`]: https://crates.io/crates/algonaut
 [algokit]: https://github.com/algorandfoundation/algokit-cli
