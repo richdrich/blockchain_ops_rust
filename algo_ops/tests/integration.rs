@@ -1,8 +1,9 @@
 //! `integration` test target: AlgoOps tests that require algokit localnet.
 //!
-//! Every test in this bucket is `#[ignore]`d so the default `cargo test` stays
-//! green without a node. Run them with:
-//!   `cargo test --test integration -- --ignored`
+//! This target is marked `test = false` in Cargo.toml, so a bare `cargo test`
+//! skips it and stays green without a node. Run this bucket explicitly with:
+//!   `cargo test --test integration`
+//! The tests fail (rather than skip) if localnet is not running.
 //! (Wiring CI to run this bucket is tracked separately.)
 
 #[path = "support/mod.rs"]

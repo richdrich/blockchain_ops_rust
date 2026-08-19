@@ -36,8 +36,8 @@ pub fn localnet_config() -> AlgoChainConfig {
 }
 
 /// Panic unless algokit localnet is reachable on the configured algod port. The
-/// localnet tests are `#[ignore]`d by default, so this only fires when they are
-/// explicitly run with `cargo test -- --ignored`.
+/// localnet tests live in the `integration` target (`test = false`), so this only
+/// fires when they are run explicitly with `cargo test --test integration`.
 pub fn assert_localnet_available() {
     let cfg = localnet_config();
     let addr = format!(

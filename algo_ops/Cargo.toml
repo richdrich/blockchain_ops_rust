@@ -34,9 +34,11 @@ workspace = true
 
 # ── Test targets ─────────────────────────────────────────────────────────────
 # Two buckets, after the bingle_rust pattern:
-#   `unit`        — AlgoOps tests that need no running node; run by `cargo test`.
-#   `integration` — localnet/dapp tests, all `#[ignore]`d; require algokit
-#                   localnet. Run with `cargo test --test integration -- --ignored`.
+#   `unit`        — AlgoOps tests that need no running node. Run by a bare
+#                   `cargo test` (and `cargo test --test unit`).
+#   `integration` — localnet/dapp tests that require algokit localnet. Marked
+#                   `test = false` so a bare `cargo test` skips them; run them
+#                   explicitly with `cargo test --test integration`.
 # (Wiring CI to run the integration bucket is tracked separately.)
 
 [[test]]
@@ -46,3 +48,5 @@ path = "tests/unit.rs"
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+# Excluded from the default `cargo test`; opt in with `cargo test --test integration`.
+test = false

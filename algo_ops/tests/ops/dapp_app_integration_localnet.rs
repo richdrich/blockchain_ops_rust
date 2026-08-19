@@ -4,7 +4,8 @@
 //!
 //! This is the AlgoOps-via-dapp test: it drives AlgoOps' app methods directly
 //! against a small TEAL contract, with no higher-level orchestration. Requires
-//! algokit localnet; `#[ignore]`d by default (run with `-- --ignored`).
+//! algokit localnet; in the `integration` target (run with
+//! `cargo test --test integration`).
 
 use crate::support::setup_localnet;
 use crate::support::test_util;
@@ -29,7 +30,6 @@ const MINI2_CLEAR: &str = concat!(
 
 #[test]
 #[cfg(not(target_os = "ios"))]
-#[ignore = "requires algokit localnet"]
 pub fn deploy_call_validate_and_delete_teal_app() {
     test_util::assert_localnet_available();
     let cfg = test_util::localnet_config();
