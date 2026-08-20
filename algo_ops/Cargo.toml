@@ -1,6 +1,6 @@
 [package]
 name = "algo_ops"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Algorand implementation of the blockchain_ops traits, over algonaut."
 license = "MIT OR Apache-2.0"
@@ -17,8 +17,8 @@ autotests = false
 [dependencies]
 # `version` is required to publish to crates.io: the path is used in-workspace,
 # the version when resolving the published crate. Kept in lockstep with
-# blockchain_ops's version (release-plz `version_group`).
-blockchain_ops = { path = "../blockchain_ops", version = "0.2.0" }
+# blockchain_ops's version (both bumped together by `cargo set-version`).
+blockchain_ops = { path = "../blockchain_ops", version = "0.3.0" }
 algonaut = "0.8.0"
 anyhow = "1"
 base64 = "0.21"
