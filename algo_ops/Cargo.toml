@@ -5,14 +5,20 @@ edition = "2024"
 description = "Algorand implementation of the blockchain_ops traits, over algonaut."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/richdrich/blockchain_ops_rust"
+homepage = "https://github.com/richdrich/blockchain_ops_rust"
+documentation = "https://docs.rs/algo_ops"
 readme = "README.md"
-publish = false
+keywords = ["algorand", "blockchain", "cryptocurrency", "algonaut", "web3"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
 # Test targets are declared explicitly below (per project guidelines: every test
 # is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
 autotests = false
 
 [dependencies]
-blockchain_ops = { path = "../blockchain_ops" }
+# `version` is required to publish to crates.io: the path is used in-workspace,
+# the version when resolving the published crate. Kept in lockstep with
+# blockchain_ops's version (release-plz `version_group`).
+blockchain_ops = { path = "../blockchain_ops", version = "0.1.0" }
 algonaut = "0.8.0"
 anyhow = "1"
 base64 = "0.21"

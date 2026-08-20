@@ -59,7 +59,7 @@ Per-crate documentation: [`blockchain_ops`](blockchain_ops/README.md) and [`algo
 
 ## Development
 
-See [DEVELOPER.md](DEVELOPER.md) for build, test, and continuous-integration (CI) instructions.
+See [DEVELOPER.md](DEVELOPER.md) for build, test, and continuous-integration (CI) instructions, and [RELEASING.md](RELEASING.md) for how the crates are published to crates.io.
 
 [`algonaut`]: https://crates.io/crates/algonaut
 [algokit]: https://github.com/algorandfoundation/algokit-cli

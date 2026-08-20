@@ -1,0 +1,34 @@
+name: deploy-guard
+
+# Guard on the deployment pull request (PR): only commits already merged to
+# `master` may reach the `deployed` branch. Combined with branch protection on
+# `deployed` that requires the `quality`, `unit`, and `integration` checks, this
+# enforces "only vetted master commits deploy, and only when all gates are green".
+on:
+  pull_request:
+    branches: [deployed]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  only-master:
+    name: only-master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Ensure PR head is contained in master
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin master
+          if git merge-base --is-ancestor "${HEAD_SHA}" origin/master; then
+            echo "PR head ${HEAD_SHA} is contained in master — ok to deploy"
+          else
+            echo "::error::Only commits already merged to master may be deployed; ${HEAD_SHA} is not on master."
+            exit 1
+          fi
