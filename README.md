@@ -1,6 +1,11 @@
 # blockchain_ops_rust
 
-Reusable blockchain-operations crates, extracted from `bingle_rust` (see that repo's issue #161).
+In producing distributed blockchain applications, we found a need for a shared high level interface to
+a blockchain (initially Algorand).
+
+This is that interface - it provides chain-agnostic operation traits (`BlockChainOps`, `AssetOps`).
+
+It's implemented through the following two crates:
 
 - **`blockchain_ops`** — chain-agnostic operation traits (`BlockChainOps`, `AssetOps`). Depends only on `anyhow`; no chain software development kit (SDK).
 - **`algo_ops`** — the Algorand implementation over [`algonaut`]: `AlgoOps` (accounts, payments, Algorand Standard Assets, and the Transaction Execution Approval Language (TEAL) application lifecycle), implementing the `blockchain_ops` traits, plus the `AlgoOps::new_for_algorand` constructor.
