@@ -20,10 +20,11 @@ and `unit` checks (the `integration` localnet bucket also runs on every push to
    - publishes `blockchain_ops`, then `algo_ops`, to crates.io via Trusted
      Publishing (OpenID Connect / OIDC) — no stored registry token;
    - tags the released commit `vX.Y.Z`;
-   - opens the next version-bump PR on `master` via release-plz.
-3. **Version bump:** review and merge the release-plz PR on `master`; it raises
-   both crates (kept in lockstep by the `version_group` in
-   [`release-plz.toml`](release-plz.toml)) to the next version, ready for the
+   - opens a next-minor version-bump PR on `master` (authored by the GitHub App
+     so it triggers the required checks).
+3. **Version bump:** review and merge that bump PR on `master`; it raises both
+   crates in lockstep to the next minor (via `cargo set-version --bump minor`),
+   so `master` stays one minor ahead of the published release, ready for the
    following deploy.
 
 ## One-time setup (required before the first deploy)
@@ -52,12 +53,13 @@ manual, after which continuous integration (CI) is token-free.
    `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After this the deploy
    job authenticates via OIDC and no registry token is ever stored.
 
-3. **Set up the release-plz GitHub App** so the version-bump PR is authored by
-   the App rather than the default `GITHUB_TOKEN` — the App's pull requests (PRs)
-   trigger the required `quality`/`unit` checks, so the bump PR is mergeable.
+3. **Set up the version-bump GitHub App** so the automated bump PR is authored
+   by the App rather than the default `GITHUB_TOKEN` — the App's pull requests
+   (PRs) trigger the required `quality`/`unit` checks, so the bump PR is
+   mergeable.
 
    a. **Create the App.** GitHub → Settings → Developer settings → GitHub Apps →
-      New GitHub App. Set a name (e.g. `blockchain-ops-release-plz`) and a
+      New GitHub App. Set a name (e.g. `blockchain-ops-release`) and a
       homepage (your GitHub profile is fine). Under **Webhook**, uncheck
       `Active` (no webhook URL needed).
 
@@ -80,7 +82,7 @@ manual, after which continuous integration (CI) is token-free.
       - `RELEASE_PLZ_APP_PRIVATE_KEY` — the full contents of the `.pem` file.
 
    The deploy job's `bump` step exchanges these for a short-lived token via
-   `actions/create-github-app-token` and passes it to release-plz.
+   `actions/create-github-app-token` and authors the bump PR with it.
 
 4. **Create branch protection / a ruleset on `deployed`** requiring the
    `quality`, `unit`, and `integration` status checks, so a deployment PR cannot
