@@ -10,7 +10,7 @@ name: deploy
 #      the first) via crates.io Trusted Publishing (OpenID Connect / OIDC), with
 #      no stored registry token;
 #   3. tag the released commit `vX.Y.Z`;
-#   4. open a next-minor version-bump PR on `master` so it stays one minor ahead.
+#   4. open a next-patch version-bump PR on `master` so it stays one patch ahead.
 #
 # One-time setup before the first real deploy is documented in RELEASING.md
 # (manual first publish, Trusted Publishing config, the version-bump GitHub App,
@@ -143,7 +143,7 @@ jobs:
             echo "pushed tag ${tag}"
           fi
 
-  # ── Open the next-minor version-bump PR on master (cargo set-version + App) ──
+  # ── Open the next-patch version-bump PR on master (cargo set-version + App) ──
   bump:
     name: bump
     needs: publish
@@ -169,18 +169,18 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-edit
-      # Eagerly bump both crates to the next minor (kept in lockstep, and the
+      # Eagerly bump both crates to the next patch (kept in lockstep, and the
       # internal path-dependency requirement with them) so master always sits one
-      # minor ahead of the version just published, then open the PR. Authored by
+      # patch ahead of the version just published, then open the PR. Authored by
       # the App token so the PR triggers the required `quality`/`unit` checks.
-      - name: Open next-minor version-bump PR on master
+      - name: Open next-patch version-bump PR on master
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git config user.name "blockchain-ops-release[bot]"
           git config user.email "blockchain-ops-release[bot]@users.noreply.github.com"
-          cargo set-version --bump minor
+          cargo set-version --bump patch
           version=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name=="blockchain_ops").version')
           branch="release/v${version}"
@@ -194,4 +194,4 @@ jobs:
           git push -u origin "${branch}"
           gh pr create --base master --head "${branch}" \
             --title "Bump crates to ${version}" \
-            --body "Automated post-deploy bump to \`${version}\` (next minor), keeping master one minor ahead of the published release. Opened by deploy.yml."
+            --body "Automated post-deploy bump to \`${version}\` (next patch), keeping master one patch ahead of the published release. Opened by deploy.yml."
