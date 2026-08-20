@@ -51,3 +51,10 @@ jobs:
       # the job on any warning.
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Docs must build cleanly (including intra-doc links); -D warnings fails the
+      # job on any rustdoc warning.
+      - name: Build docs (deny warnings)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --workspace
