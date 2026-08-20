@@ -35,6 +35,11 @@
 
 - Create temp and output files (logs, etc.) in `tmp/` so they are gitignored.
 
+## Continuous integration (GitHub Actions)
+
+- Actions must run on the Node 24 runtime — Node 20 is end of life (EOL). Pin every action to a major version whose runtime is `node24` (e.g. `actions/checkout@v5`) so no Node 20 deprecation warnings appear. Composite (shell) actions have no Node runtime and are exempt.
+- Every workflow must set a `concurrency` group with `cancel-in-progress: true` so a superseded run for the same ref is cancelled and stale runs do not pile up.
+
 ## Before creating a PR
 
 1. Run `cargo test` for the workspace and verify all tests pass with no warnings.

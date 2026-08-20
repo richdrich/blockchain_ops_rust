@@ -25,4 +25,29 @@ cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
 
+### Tests
+
+`algo_ops` splits its tests into two buckets (declared in `algo_ops/Cargo.toml`):
+
+- **`unit`** — no external services; run by a bare `cargo test`.
+- **`integration`** — localnet/dapp tests that need [algokit] localnet running
+  (algod on `localhost:4001`). Marked `test = false`, so a bare `cargo test`
+  skips them; run them explicitly with `cargo test -p algo_ops --test integration`
+  after `algokit localnet start`.
+
+### Continuous integration
+
+The `integration` bucket runs in GitHub Actions
+(`.github/workflows/integration.yml`) against algokit localnet. It is kept off
+the fast per-push path because it needs Docker and is slow; it is triggered:
+
+- on every push to `master` (mainline guard),
+- nightly on a schedule,
+- on a pull request that carries the `localnet` label, and
+- manually via `workflow_dispatch` from the Actions tab.
+
+A superseded run for the same ref is cancelled (`concurrency`) so stale
+localnet runs do not pile up.
+
 [`algonaut`]: https://crates.io/crates/algonaut
+[algokit]: https://github.com/algorandfoundation/algokit-cli

@@ -4,7 +4,7 @@
 //! skips it and stays green without a node. Run this bucket explicitly with:
 //!   `cargo test --test integration`
 //! The tests fail (rather than skip) if localnet is not running.
-//! (Wiring CI to run this bucket is tracked separately.)
+//! CI runs this bucket against localnet via `.github/workflows/integration.yml`.
 
 #[path = "support/mod.rs"]
 mod support;

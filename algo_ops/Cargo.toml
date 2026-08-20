@@ -39,7 +39,8 @@ workspace = true
 #   `integration` — localnet/dapp tests that require algokit localnet. Marked
 #                   `test = false` so a bare `cargo test` skips them; run them
 #                   explicitly with `cargo test --test integration`.
-# (Wiring CI to run the integration bucket is tracked separately.)
+# CI runs the integration bucket against localnet via
+# `.github/workflows/integration.yml`.
 
 [[test]]
 name = "unit"
