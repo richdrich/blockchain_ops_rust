@@ -5,6 +5,7 @@ edition = "2024"
 description = "Chain-agnostic blockchain operation traits (BlockChainOps, AssetOps)."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/richdrich/blockchain_ops_rust"
+readme = "README.md"
 publish = false
 
 [dependencies]
