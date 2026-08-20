@@ -1,0 +1,17 @@
+# cargo-nextest configuration. nextest runs each test in its own process, so
+# slow-timeout is a real per-test timeout with a hard kill of the process tree.
+# Install nextest with:  cargo binstall cargo-nextest   (see https://nexte.st)
+# Ported from the bingle_rust workspace configuration.
+
+[profile.default]
+# Kill any single test that runs longer than 20s.
+slow-timeout = { period = "20s", terminate-after = 1 }
+
+# CI-friendly profile: same timeout, retry a flaky test once, and emit JUnit XML
+# (written to target/nextest/ci/junit.xml). Select with `--profile ci`.
+[profile.ci]
+slow-timeout = { period = "20s", terminate-after = 1 }
+retries = 1
+
+[profile.ci.junit]
+path = "junit.xml"

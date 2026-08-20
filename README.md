@@ -37,17 +37,28 @@ cargo fmt --check
 
 ### Continuous integration
 
-The `integration` bucket runs in GitHub Actions
-(`.github/workflows/integration.yml`) against algokit localnet. It is kept off
-the fast per-push path because it needs Docker and is slow; it is triggered:
+The fast path runs on every pull request and on pushes to `master`, needs no
+external services, and is what you require in branch protection:
+
+- **`quality-checks.yml`** (job `quality`) — `cargo fmt --check` and
+  `cargo clippy --workspace --all-targets -- -D warnings`.
+- **`unit-tests.yml`** (job `unit`) — builds and runs the workspace unit tests
+  with [`cargo-nextest`]. A bare test run covers the `unit` bucket and the crate
+  lib tests and skips the `test = false` integration target, so no localnet is
+  needed.
+
+The slower **`integration.yml`** runs the `algo_ops` `integration` bucket
+against algokit localnet (Docker). It is kept off the fast per-push path and is
+triggered:
 
 - on every push to `master` (mainline guard),
 - nightly on a schedule,
 - on a pull request that carries the `localnet` label, and
 - manually via `workflow_dispatch` from the Actions tab.
 
-A superseded run for the same ref is cancelled (`concurrency`) so stale
-localnet runs do not pile up.
+All three cancel a superseded run for the same ref (`concurrency`) so stale
+runs do not pile up.
 
 [`algonaut`]: https://crates.io/crates/algonaut
 [algokit]: https://github.com/algorandfoundation/algokit-cli
+[`cargo-nextest`]: https://nexte.st
