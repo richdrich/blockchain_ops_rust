@@ -32,8 +32,10 @@ The crates are brand-new on crates.io, and a Trusted Publisher cannot be
 configured on a crate that does not exist yet — so the very first publish is
 manual, after which continuous integration (CI) is token-free.
 
-1. **First publish (manual, once).** With a crates.io API token in your
-   environment, from a clean `master` checkout, publish the dependency first:
+1. **First publish (manual, once).** With a crates.io API token exported as
+   `CARGO_REGISTRY_TOKEN` (`export CARGO_REGISTRY_TOKEN=<token>`, or run
+   `cargo login` once instead), from a clean `master` checkout, publish the
+   dependency first:
 
    ```
    cargo publish -p blockchain_ops
