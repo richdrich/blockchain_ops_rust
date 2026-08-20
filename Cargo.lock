@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "algo_ops"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "algonaut",
  "anyhow",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "blockchain_ops"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
 ]

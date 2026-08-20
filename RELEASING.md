@@ -32,8 +32,10 @@ The crates are brand-new on crates.io, and a Trusted Publisher cannot be
 configured on a crate that does not exist yet — so the very first publish is
 manual, after which continuous integration (CI) is token-free.
 
-1. **First publish (manual, once).** With a crates.io API token in your
-   environment, from a clean `master` checkout, publish the dependency first:
+1. **First publish (manual, once).** With a crates.io API token exported as
+   `CARGO_REGISTRY_TOKEN` (`export CARGO_REGISTRY_TOKEN=<token>`, or run
+   `cargo login` once instead), from a clean `master` checkout, publish the
+   dependency first:
 
    ```
    cargo publish -p blockchain_ops
@@ -50,11 +52,35 @@ manual, after which continuous integration (CI) is token-free.
    `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After this the deploy
    job authenticates via OIDC and no registry token is ever stored.
 
-3. **Install the release-plz GitHub App** on the repository and add two repo
-   secrets so the version-bump PR is authored by the App (its PRs trigger the
-   required checks, so the bump PR is mergeable):
-   - `RELEASE_PLZ_APP_ID`
-   - `RELEASE_PLZ_APP_PRIVATE_KEY`
+3. **Set up the release-plz GitHub App** so the version-bump PR is authored by
+   the App rather than the default `GITHUB_TOKEN` — the App's pull requests (PRs)
+   trigger the required `quality`/`unit` checks, so the bump PR is mergeable.
+
+   a. **Create the App.** GitHub → Settings → Developer settings → GitHub Apps →
+      New GitHub App. Set a name (e.g. `blockchain-ops-release-plz`) and a
+      homepage (your GitHub profile is fine). Under **Webhook**, uncheck
+      `Active` (no webhook URL needed).
+
+   b. **Repository permissions** (Read & write): **Contents** and
+      **Pull requests**. (Add **Administration** only if you later protect the
+      release tags.) No account/organization permissions are needed.
+
+   c. **Installation scope.** Choose "Only on this account", then **Create**.
+
+   d. **Generate a private key.** On the App's page, under
+      "Private keys", click **Generate a private key** — a `.pem` file
+      downloads. Note the numeric **App ID** shown near the top of the same page.
+
+   e. **Install the App** on `richdrich/blockchain_ops_rust`
+      (App page → Install App → pick the repo).
+
+   f. **Store two repository secrets** (repo → Settings → Secrets and variables →
+      Actions), with exactly these names — they are what `deploy.yml` reads:
+      - `RELEASE_PLZ_APP_ID` — the numeric App ID from step (d).
+      - `RELEASE_PLZ_APP_PRIVATE_KEY` — the full contents of the `.pem` file.
+
+   The deploy job's `bump` step exchanges these for a short-lived token via
+   `actions/create-github-app-token` and passes it to release-plz.
 
 4. **Create branch protection / a ruleset on `deployed`** requiring the
    `quality`, `unit`, and `integration` status checks, so a deployment PR cannot
