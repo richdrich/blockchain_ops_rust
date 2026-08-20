@@ -1,0 +1,173 @@
+name: deploy
+
+# Publish the crates to crates.io.
+#
+# Triggered only by a push to the `deployed` branch — which happens when a
+# deployment pull request (PR), `master` -> `deployed`, is merged. The flow:
+#   1. re-run every gate (fast checks, unit tests, and the localnet integration
+#      bucket) so nothing ships unless all are green;
+#   2. publish `blockchain_ops` then `algo_ops` (ordered — the second depends on
+#      the first) via crates.io Trusted Publishing (OpenID Connect / OIDC), with
+#      no stored registry token;
+#   3. tag the released commit `vX.Y.Z`;
+#   4. ask release-plz to open the next version-bump PR on `master`.
+#
+# One-time setup before the first real deploy is documented in RELEASING.md
+# (manual first publish, Trusted Publishing config, the release-plz GitHub App,
+# and branch protection on `deployed`).
+on:
+  push:
+    branches: [deployed]
+  workflow_dispatch:
+
+# Never cancel a publish mid-flight; queue instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Gate 1: fast checks + unit tests (no external services) ─────────────────
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --workspace
+      - run: cargo test --workspace --locked
+
+  # ── Gate 2: localnet integration bucket (Docker + algokit) ──────────────────
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ALGOD_TOKEN: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install algokit
+        run: |
+          pipx install algokit
+          algokit --version
+      - name: Start algokit localnet
+        run: algokit localnet start
+      - name: Wait for algod on localhost:4001
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -H "X-Algo-API-Token: ${ALGOD_TOKEN}" \
+                 http://localhost:4001/v2/status >/dev/null; then
+              echo "algod is ready"; exit 0
+            fi
+            echo "waiting for algod (attempt ${i})..."; sleep 5
+          done
+          echo "algod did not become ready"; exit 1
+      - name: Run integration bucket
+        run: cargo test -p algo_ops --test integration -- --nocapture
+      - name: Stop algokit localnet
+        if: always()
+        run: algokit localnet stop || true
+
+  # ── Publish: ordered, via Trusted Publishing (OIDC) — no stored token ───────
+  publish:
+    name: publish
+    needs: [checks, integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # required for crates.io Trusted Publishing
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Authenticate to crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      # Publish the dependency first, then the dependent. `already-published` is
+      # tolerated so a re-run after a partial failure is safe. cargo waits for
+      # the crate to appear in the index before returning, so the ordered publish
+      # resolves correctly.
+      - name: Publish blockchain_ops then algo_ops
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            local crate="$1"
+            if cargo publish -p "$crate" 2>&1 | tee /tmp/pub.log; then
+              echo "published $crate"
+            elif grep -qiE "already (exists|uploaded)|crate version .* is already" /tmp/pub.log; then
+              echo "$crate version already on crates.io — skipping"
+            else
+              echo "::error::publish of $crate failed"; exit 1
+            fi
+          }
+          publish_one blockchain_ops
+          publish_one algo_ops
+
+  # ── Tag the released commit vX.Y.Z (idempotent) ─────────────────────────────
+  tag:
+    name: tag
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the tag
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Create and push version tag
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="blockchain_ops").version')
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "tag ${tag} already exists — skipping"
+          else
+            git tag "${tag}"
+            git push origin "${tag}"
+            echo "pushed tag ${tag}"
+          fi
+
+  # ── Open the next version-bump PR on master (release-plz + GitHub App) ───────
+  bump:
+    name: bump
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # A GitHub App token (not GITHUB_TOKEN) is used so the bump PR triggers the
+      # required `quality`/`unit` checks and can therefore be merged.
+      - name: Generate release-plz app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Open version-bump PR on master
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
