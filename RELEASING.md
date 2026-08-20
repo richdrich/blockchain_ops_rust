@@ -20,11 +20,11 @@ and `unit` checks (the `integration` localnet bucket also runs on every push to
    - publishes `blockchain_ops`, then `algo_ops`, to crates.io via Trusted
      Publishing (OpenID Connect / OIDC) — no stored registry token;
    - tags the released commit `vX.Y.Z`;
-   - opens a next-minor version-bump PR on `master` (authored by the GitHub App
+   - opens a next-patch version-bump PR on `master` (authored by the GitHub App
      so it triggers the required checks).
 3. **Version bump:** review and merge that bump PR on `master`; it raises both
-   crates in lockstep to the next minor (via `cargo set-version --bump minor`),
-   so `master` stays one minor ahead of the published release, ready for the
+   crates in lockstep to the next patch (via `cargo set-version --bump patch`),
+   so `master` stays one patch ahead of the published release, ready for the
    following deploy.
 
 ## One-time setup (required before the first deploy)
