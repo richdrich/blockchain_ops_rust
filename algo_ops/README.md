@@ -1,6 +1,9 @@
 # algo_ops
 
-The Algorand implementation of the [`blockchain_ops`] traits, over [`algonaut`].
+In producing distributed blockchain applications, we found a need for a shared high level interface to
+a blockchain (initially Algorand).
+
+This crate is part of that interface - it provides the Algorand implementation of the [`blockchain_ops`] traits, over [`algonaut`].
 `AlgoOps` covers accounts, payments, Algorand Standard Assets, and the
 Transaction Execution Approval Language (TEAL) application lifecycle, and
 implements `BlockChainOps` and `AssetOps`. Construct it with
