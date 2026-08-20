@@ -1,0 +1,53 @@
+name: quality-checks
+
+# Run rustfmt + clippy on every pull request and on pushes to master. This is
+# the fast path: it needs no external services (no localnet). Formatting must be
+# clean and clippy must pass with -D warnings. The clippy backlog is silenced
+# centrally in [workspace.lints.clippy] (Cargo.toml), so the gate is expected to
+# pass. The job is named "quality" — require that check in branch protection to
+# block merge. (The slower algo_ops localnet bucket lives in integration.yml.)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [master]
+
+# Cancel a superseded run when the same PR/branch gets new commits, so a PR is
+# always graded on its latest state.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    # Skip draft pull requests; they run again automatically on ready_for_review.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      # Actions are pinned to majors whose runtime is Node 24 (Node 20 is EOL);
+      # dtolnay/rust-toolchain is a composite (shell) action with no Node runtime.
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Clippy compiles every target (including the localnet integration target,
+      # which only compiles here — it is not run, so no node is needed) and fails
+      # the job on any warning.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings

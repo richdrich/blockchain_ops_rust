@@ -1,0 +1,60 @@
+name: unit-tests
+
+# Run the workspace unit tests on every pull request and on pushes to master.
+# This is the fast path: a bare `cargo test`/nextest runs the `unit` bucket and
+# the crate lib tests, and skips the algo_ops `integration` target (declared
+# `test = false`), so no localnet/Docker is needed here. The job named "unit" is
+# what you mark as a required status check in branch protection so a failing or
+# incomplete run blocks merge. (The localnet bucket lives in integration.yml.)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [master]
+
+# Cancel a superseded run when the same PR/branch gets new commits, so a PR is
+# always graded on its latest state.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    # Skip draft pull requests; they run again automatically on ready_for_review.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+      # Fail the build on any compiler warning, matching the "no warnings"
+      # requirement in CLAUDE.md.
+      RUSTFLAGS: "-D warnings"
+    steps:
+      # Actions are pinned to majors whose runtime is Node 24 (Node 20 is EOL);
+      # dtolnay/rust-toolchain and taiki-e/install-action are composite (shell)
+      # actions with no Node runtime.
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      # nextest gives per-test process isolation, a hard per-test timeout, and a
+      # retry for flakes. The `ci` profile is defined in .config/nextest.toml.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # Compile the tests first so a build/compile break is reported as a failure
+      # (an "incomplete" run) that blocks merge. `--workspace` excludes the
+      # `test = false` integration target, so this needs no localnet.
+      - name: Build unit tests
+        run: cargo test --workspace --no-run --locked
+
+      - name: Run unit tests
+        run: cargo nextest run --profile ci --no-fail-fast --workspace
