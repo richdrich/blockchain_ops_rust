@@ -8,7 +8,7 @@ fn default_cfg() -> AlgoChainConfig {
 #[cfg(not(target_os = "ios"))]
 pub fn account_balance_returns_error_with_invalid_address() {
     // AlgoOps with an explicit but invalid address should fail with a clear error
-    let ops = AlgoOps::new(
+    let ops = AlgoOps::new_for_algorand(
         None,
         Some("INVALID_ADDRESS".to_string()),
         Some(default_cfg()),
@@ -33,7 +33,7 @@ pub fn account_balance_returns_none_with_unreachable_provider() {
     cfg.client_api_url = "http://127.0.0.1".to_string();
     cfg.client_api_port = 19999; // unlikely to be running
 
-    let ops = AlgoOps::new(None, Some(id), Some(cfg));
+    let ops = AlgoOps::new_for_algorand(None, Some(id), Some(cfg));
     assert!(ops.address.is_some(), "expected address to be set");
 
     let result = ops.account_balance();

@@ -14,7 +14,7 @@ fn generate_keypair_produces_valid_address_and_passphrase() {
     );
 
     // Derive address again from passphrase and ensure it matches
-    let ops = AlgoOps::new(Some(passphrase.clone()), None, None);
+    let ops = AlgoOps::new_for_algorand(Some(passphrase.clone()), None, None);
     let derived = ops
         .address
         .as_ref()

@@ -6,7 +6,7 @@ use algo_ops::AlgoOps;
 #[test]
 #[cfg(not(target_os = "ios"))]
 pub fn change_reserve_errors_on_zero_asset_id() {
-    let ops = AlgoOps::new(
+    let ops = AlgoOps::new_for_algorand(
         None,
         Some("P577PSTDICQ6PQFBR5YMDMJ2YVK7LT5V4GOPNVDLCEDJIL7XGRWC5BRFWA".to_string()),
         None,
@@ -25,7 +25,7 @@ pub fn change_reserve_errors_on_zero_asset_id() {
 #[cfg(not(target_os = "ios"))]
 pub fn change_reserve_errors_on_invalid_reserve_address() {
     // No passphrase/address required for this error path; invalid reserve address is validated first
-    let ops = AlgoOps::new(
+    let ops = AlgoOps::new_for_algorand(
         None,
         Some("P577PSTDICQ6PQFBR5YMDMJ2YVK7LT5V4GOPNVDLCEDJIL7XGRWC5BRFWA".to_string()),
         None,
