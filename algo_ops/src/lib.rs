@@ -78,11 +78,11 @@ impl AssetOps for AlgoOps {
 }
 
 impl AlgoOps {
-    /// Algorand-specific constructor — the intended replacement for calling [`AlgoOps::new`]
-    /// directly.
+    /// Algorand-specific constructor — the public entry point for building an `AlgoOps`.
     ///
-    /// Kept alongside `new`; a later stage reduces `new`'s visibility so that construction goes
-    /// through this named constructor (and, eventually, a chain-specific factory trait).
+    /// The lower-level `new` is `pub(crate)`, so all external construction goes through this
+    /// named factory (and, eventually, a chain-specific factory trait). For indexer-only use,
+    /// pass `None, None, config`.
     pub fn new_for_algorand(
         passphrase: Option<String>,
         address: Option<String>,

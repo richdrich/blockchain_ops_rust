@@ -86,7 +86,7 @@ pub fn ensure_localnet_accounts_funded(
 
     // For each target, ensure it's funded with at least some ALGOs
     for &addr in target_addrs {
-        let ops = AlgoOps::new(None, Some(addr.to_string()), Some(cfg.clone()));
+        let ops = AlgoOps::new_for_algorand(None, Some(addr.to_string()), Some(cfg.clone()));
         let bal_opt = ops
             .account_balance()
             .map_err(|e| format!("balance check failed: {e}"))?;
@@ -129,7 +129,8 @@ pub fn ensure_localnet_accounts_funded(
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(500));
                 if let Ok(b) =
-                    AlgoOps::new(None, Some(addr.to_string()), Some(cfg.clone())).account_balance()
+                    AlgoOps::new_for_algorand(None, Some(addr.to_string()), Some(cfg.clone()))
+                        .account_balance()
                 {
                     if let Some(v) = b {
                         if v >= 900.0 {

@@ -57,7 +57,7 @@ pub fn assert_localnet_available() {
 
 /// Construct an `AlgoOps` from a 25-word mnemonic passphrase and address.
 pub fn ops_from_mnemonic(addr: &str, mnem: &str, cfg: AlgoChainConfig) -> AlgoOps {
-    AlgoOps::new(Some(mnem.to_string()), Some(addr.to_string()), Some(cfg))
+    AlgoOps::new_for_algorand(Some(mnem.to_string()), Some(addr.to_string()), Some(cfg))
 }
 
 pub fn init_test_logging() {

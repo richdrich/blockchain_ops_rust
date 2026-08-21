@@ -130,11 +130,10 @@ impl AlgoOps {
         byte_key_to_address(&pk)
     }
 
-    pub fn new_indexer(config: Option<AlgoChainConfig>) -> Self {
-        Self::new(None, None, config)
-    }
-
-    pub fn new(
+    // Construction is sealed to the crate: consumers go through the
+    // `AlgoOps::new_for_algorand` factory (see lib.rs). For indexer-only use,
+    // construct with `new_for_algorand(None, None, config)`.
+    pub(crate) fn new(
         passphrase: Option<String>,
         address: Option<String>,
         config: Option<AlgoChainConfig>,
@@ -189,10 +188,13 @@ impl AlgoOps {
     }
 
     // HTTP status codes that warrant a retry (transient/overload errors).
-    pub const RETRYABLE_STATUS_CODES: &'static [u16] = &[408, 425, 429, 502, 503, 504];
+    // `pub(crate)` in production; re-exported publicly only under `test-support`.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) const RETRYABLE_STATUS_CODES: &'static [u16] = &[408, 425, 429, 502, 503, 504];
 
     // Returns true if the algonaut error is a retryable transient HTTP error.
-    pub fn is_retryable(e: &algonaut::Error) -> bool {
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn is_retryable(e: &algonaut::Error) -> bool {
         if let algonaut::Error::Request(req) = e
             && let algonaut::error::RequestErrorDetails::Http { status, .. } = &req.details
         {
@@ -1308,9 +1310,10 @@ impl AlgoOps {
 
     /// Extract (creator, reserve) addresses from an asset_information JSON value. Returns None if fields missing.
     ///
-    /// Production helper used by `recover_reserve_balance`; also `pub` so the reserve-helper
-    /// integration tests can exercise the parsing directly.
-    pub fn parse_creator_reserve_from_asset_info_value(
+    /// Production helper used by `recover_reserve_balance`; `pub(crate)`, and re-exported
+    /// publicly under `test-support` so the reserve-helper tests can exercise the parsing.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_creator_reserve_from_asset_info_value(
         v: &serde_json::Value,
     ) -> Option<(String, String)> {
         let params = v.get("params");
@@ -1329,9 +1332,13 @@ impl AlgoOps {
 
     /// From an account_information JSON value, find the holding amount for the given asset id.
     ///
-    /// Production helper used by `asset_holding` / `recover_reserve_balance`; also `pub` so the
-    /// reserve-helper integration tests can exercise the parsing directly.
-    pub fn parse_holding_amount_from_account_value(v: &serde_json::Value, asset_id: u64) -> u64 {
+    /// Production helper used by `asset_holding` / `recover_reserve_balance`; `pub(crate)`, and
+    /// re-exported publicly under `test-support` so the reserve-helper tests can exercise it.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_holding_amount_from_account_value(
+        v: &serde_json::Value,
+        asset_id: u64,
+    ) -> u64 {
         if let Some(arr) = v.get("assets").and_then(|x| x.as_array()) {
             for holding in arr {
                 let id = holding
@@ -1770,7 +1777,8 @@ impl AlgoOps {
         Ok((tx_id, logs))
     }
 
-    pub fn build_call_app_tx(
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn build_call_app_tx(
         &self,
         app_id: u64,
         asset_id: Option<u64>,
@@ -1780,7 +1788,10 @@ impl AlgoOps {
         self.build_call_app_tx_inner(app_id, asset_id, &[], method, args)
     }
 
-    pub fn build_call_app_tx_with_foreign_apps(
+    // No in-crate caller: a `test-support`-only escape hatch for downstream tests.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    #[cfg_attr(not(feature = "test-support"), allow(dead_code))]
+    pub(crate) fn build_call_app_tx_with_foreign_apps(
         &self,
         app_id: u64,
         asset_id: Option<u64>,
