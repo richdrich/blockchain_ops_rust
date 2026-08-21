@@ -30,7 +30,7 @@ pub fn account_balance_for_address10mil_returns_some() {
     test_util::assert_localnet_available();
     fund_test_accounts_or_panic();
     let cfg = localnet_config();
-    let ops = AlgoOps::new(None, Some(ADDRESS_10MIL.to_string()), Some(cfg));
+    let ops = AlgoOps::new_for_algorand(None, Some(ADDRESS_10MIL.to_string()), Some(cfg));
     let bal = ops
         .account_balance()
         .expect("network query should not error on localnet");
@@ -47,7 +47,7 @@ pub fn global_state_for_address10mil_returns_some_vec() {
     test_util::assert_localnet_available();
     fund_test_accounts_or_panic();
     let cfg = localnet_config();
-    let ops = AlgoOps::new(None, Some(ADDRESS_10MIL.to_string()), Some(cfg));
+    let ops = AlgoOps::new_for_algorand(None, Some(ADDRESS_10MIL.to_string()), Some(cfg));
     let gs = ops
         .global_state(None)
         .expect("global_state call should succeed on localnet");

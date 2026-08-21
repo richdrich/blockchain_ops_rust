@@ -1,5 +1,7 @@
 # blockchain_ops_rust
 
+[![blockchain_ops on crates.io](https://img.shields.io/crates/v/blockchain_ops?label=blockchain_ops)](https://crates.io/crates/blockchain_ops) [![blockchain_ops docs](https://img.shields.io/docsrs/blockchain_ops?label=docs.rs)](https://docs.rs/blockchain_ops) [![algo_ops on crates.io](https://img.shields.io/crates/v/algo_ops?label=algo_ops)](https://crates.io/crates/algo_ops) [![algo_ops docs](https://img.shields.io/docsrs/algo_ops?label=docs.rs)](https://docs.rs/algo_ops)
+
 In producing distributed blockchain applications, we found a need for a shared high level interface to
 a blockchain (initially Algorand).
 
@@ -14,11 +16,11 @@ The consumer is expected to be blockchain-aware: the traits cover what reads nat
 
 ## Usage
 
-Consume as a git dependency, pinned to a tag:
+Add the crates from crates.io (latest release: 0.4.0):
 
 ```toml
-blockchain_ops = { git = "https://github.com/richdrich/blockchain_ops_rust", tag = "v0.1.0" }
-algo_ops = { git = "https://github.com/richdrich/blockchain_ops_rust", tag = "v0.1.0" }
+blockchain_ops = "0.4.0"
+algo_ops = "0.4.0"
 ```
 
 ## Example: print an Algorand balance
@@ -55,7 +57,7 @@ cargo run -p algo_ops --example print_balance -- P577PSTDICQ6PQFBR5YMDMJ2YVK7LT5
 
 ## Documentation
 
-Per-crate documentation: [`blockchain_ops`](blockchain_ops/README.md) and [`algo_ops`](algo_ops/README.md). Application programming interface (API) docs are published on [docs.rs] once the crates are released to crates.io.
+Application programming interface (API) docs for the released version are on docs.rs — [`blockchain_ops`](https://docs.rs/blockchain_ops) and [`algo_ops`](https://docs.rs/algo_ops) (the docs.rs badges above show the current release). Per-crate overviews: [`blockchain_ops`](blockchain_ops/README.md) and [`algo_ops`](algo_ops/README.md).
 
 ## Development
 
@@ -63,4 +65,3 @@ See [DEVELOPER.md](DEVELOPER.md) for build, test, and continuous-integration (CI
 
 [`algonaut`]: https://crates.io/crates/algonaut
 [algokit]: https://github.com/algorandfoundation/algokit-cli
-[docs.rs]: https://docs.rs

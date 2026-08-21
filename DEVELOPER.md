@@ -22,6 +22,16 @@ cargo fmt --check
   skips them; run them explicitly with `cargo test -p algo_ops --test integration`
   after `algokit localnet start`.
 
+### `test-support` feature
+
+`AlgoOps::new` is `pub(crate)` — construct via the `AlgoOps::new_for_algorand`
+factory. A handful of genuinely test-only helpers
+(the JSON parsers, the retry predicate, and the `build_call_app_tx*` escape
+hatches) are `pub(crate)` too, re-exported as `pub` only under the opt-in
+`test-support` cargo feature. This crate's own tests enable it automatically (a
+self dev-dependency in `algo_ops/Cargo.toml`), so a bare `cargo test` just works;
+external consumers add `features = ["test-support"]` to their dev-dependency.
+
 ## Continuous integration
 
 The fast path runs on every pull request and on pushes to `master`, needs no

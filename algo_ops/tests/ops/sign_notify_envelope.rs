@@ -15,7 +15,7 @@ fn default_cfg() -> AlgoChainConfig {
 }
 
 fn test_ops() -> AlgoOps {
-    let ops = AlgoOps::new(Some(TEST_MNEMONIC.to_string()), None, Some(default_cfg()));
+    let ops = AlgoOps::new_for_algorand(Some(TEST_MNEMONIC.to_string()), None, Some(default_cfg()));
     assert_eq!(
         ops.address.as_deref(),
         Some(TEST_ADDRESS),
@@ -86,7 +86,7 @@ pub fn rejects_unknown_route() {
 #[cfg(not(target_os = "ios"))]
 pub fn signing_requires_account_access() {
     // No passphrase → no key → cannot sign.
-    let ops = AlgoOps::new_indexer(Some(default_cfg()));
+    let ops = AlgoOps::new_for_algorand(None, None, Some(default_cfg()));
     let result = ops.sign_notify_envelope("alert", "alice", "bob", "", "", TEST_NONCE, TEST_EXP);
     assert!(
         result.is_err(),

@@ -13,8 +13,9 @@ dependencies = [
 
 [[package]]
 name = "algo_ops"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
+ "algo_ops",
  "algonaut",
  "anyhow",
  "base64 0.21.7",
@@ -29,6 +30,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "visibility",
 ]
 
 [[package]]
@@ -404,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "blockchain_ops"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
 ]
@@ -2665,6 +2667,17 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "visibility"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "walkdir"

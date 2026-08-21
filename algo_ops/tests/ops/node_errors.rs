@@ -18,7 +18,7 @@ pub fn test_node_unreachable() {
     };
 
     let (id, _passphrase) = AlgoOps::generate_keypair();
-    let ops = AlgoOps::new(None, Some(id), Some(config));
+    let ops = AlgoOps::new_for_algorand(None, Some(id), Some(config));
 
     // account_balance makes a network call - with an unreachable address it should fail or return None
     let result = ops.account_balance();

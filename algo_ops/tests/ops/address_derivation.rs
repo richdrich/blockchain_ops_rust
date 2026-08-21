@@ -13,7 +13,7 @@ pub fn derives_address_from_mnemonic_when_constructed() {
     let mnemonic = "theme term glow reflect essence artefact tired bicycle february demand vacuum tent faculty arch elevator rent already anchor rough cry sketch nurse mom able inquiry";
     let expected_address = "4TKGNGRAUHMQI4EOQ34L2AIDX2VGS4OZNZIOE6BLEQFZUDRSB6RJRBPVRE";
 
-    let ops = AlgoOps::new(Some(mnemonic.to_string()), None, Some(default_cfg()));
+    let ops = AlgoOps::new_for_algorand(Some(mnemonic.to_string()), None, Some(default_cfg()));
 
     // Ensure the address is derived immediately and matches expected
     let addr = ops
@@ -41,7 +41,7 @@ pub fn derives_address_from_legacy_b64_seed_when_constructed() {
     let pk: [u8; 32] = verifying_key.to_bytes();
     let expected_address = byte_key_to_address(&pk).expect("should compute address from pubkey");
 
-    let ops = AlgoOps::new(Some(passphrase), None, Some(default_cfg()));
+    let ops = AlgoOps::new_for_algorand(Some(passphrase), None, Some(default_cfg()));
 
     let addr = ops
         .address
