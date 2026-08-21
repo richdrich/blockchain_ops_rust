@@ -31,3 +31,5 @@ mod set_asset_clawback;
 mod sign_notify_envelope;
 #[path = "ops/transaction_group.rs"]
 mod transaction_group;
+#[path = "ops/txn_submit.rs"]
+mod txn_submit;

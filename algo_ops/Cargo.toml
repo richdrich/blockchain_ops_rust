@@ -44,6 +44,9 @@ test-support = ["dep:visibility"]
 [dev-dependencies]
 # Simple test-writer logging in the ported test-support helper.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The submit/confirm integration test acts as a consumer that builds and signs
+# its own transaction with its own SDK, then submits the raw bytes via algo_ops.
+algonaut = "0.8.0"
 # Self dev-dependency so this crate's own `tests/` (separate crates that see only
 # the public API) build with `test-support` on — keeping a bare `cargo test`
 # working without extra flags.
