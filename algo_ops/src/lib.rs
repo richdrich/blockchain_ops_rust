@@ -11,8 +11,8 @@ mod ops;
 
 pub use error::AlgoError;
 pub use ops::{
-    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, KeyProvider, TransactionGroupBuilder,
-    address_to_byte_key, byte_key_to_address,
+    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, KeyProvider,
+    TransactionGroupBuilder, address_to_byte_key, byte_key_to_address,
 };
 
 use anyhow::Result;
