@@ -2196,6 +2196,235 @@ impl AlgoOps {
             timeout_rounds
         ))
     }
+
+    /// Begin building an atomic transaction group signed and sent by this account.
+    ///
+    /// Legs are added in order — [`payment`](TransactionGroupBuilder::payment),
+    /// [`asset_transfer`](TransactionGroupBuilder::asset_transfer), and
+    /// [`call_app`](TransactionGroupBuilder::call_app) — then
+    /// [`sign_and_send`](TransactionGroupBuilder::sign_and_send) assigns a shared group id,
+    /// signs every leg with this account, broadcasts them atomically, waits for confirmation,
+    /// and returns the group's representative transaction id. This keeps `algonaut` group
+    /// types out of the public surface, replacing the sealed `build_call_app_tx` escape hatch.
+    ///
+    /// ```no_run
+    /// # use algo_ops::AlgoOps;
+    /// # fn f(ops: &AlgoOps, app_address: &str, price_microalgos: u64, app_id: u64, asset_id: u64) -> anyhow::Result<()> {
+    /// let tx_id = ops
+    ///     .transaction_group()
+    ///     .payment(app_address, price_microalgos)          // Pay: ops account -> app_address
+    ///     .call_app(app_id, Some("buy_bingle()void"), &[]) // ABI app-call
+    ///     .foreign_asset(asset_id)                         // per-leg option, applies to the app-call
+    ///     .sign_and_send()?;                               // group id + sign all + broadcast + wait
+    /// # let _ = tx_id;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn transaction_group(&self) -> TransactionGroupBuilder<'_> {
+        TransactionGroupBuilder {
+            ops: self,
+            legs: Vec::new(),
+            error: None,
+        }
+    }
+}
+
+/// A single leg of an atomic transaction group. All legs are signed by the ops account.
+#[derive(Debug, Clone)]
+enum GroupLeg {
+    /// `Pay` from the ops account to `to` for `micro_algos` microALGOs.
+    Payment { to: String, micro_algos: u64 },
+    /// ASA transfer of `amount` base units of `asset_id` from the ops account to `to`.
+    AssetTransfer {
+        asset_id: u64,
+        amount: u64,
+        to: String,
+    },
+    /// ABI app-call on `app_id`, with an optional foreign asset / foreign app.
+    AppCall {
+        app_id: u64,
+        method: Option<String>,
+        args: Vec<AppArg>,
+        foreign_asset: Option<u64>,
+        foreign_app: Option<u64>,
+    },
+}
+
+/// Fluent builder for an atomic transaction group, created by [`AlgoOps::transaction_group`].
+///
+/// Every leg is signed by the single ops account (single-signer groups). Per-leg option
+/// methods ([`foreign_asset`](Self::foreign_asset) / [`foreign_app`](Self::foreign_app)) apply
+/// to the most recently added [`call_app`](Self::call_app) leg. A misuse (e.g. a per-leg option
+/// with no preceding app-call, or an empty group) is recorded and surfaced by
+/// [`sign_and_send`](Self::sign_and_send) rather than panicking.
+#[derive(Debug)]
+pub struct TransactionGroupBuilder<'a> {
+    ops: &'a AlgoOps,
+    legs: Vec<GroupLeg>,
+    error: Option<String>,
+}
+
+impl<'a> TransactionGroupBuilder<'a> {
+    // Record the first misuse; later calls keep the original message.
+    fn set_error(&mut self, msg: impl Into<String>) {
+        if self.error.is_none() {
+            self.error = Some(msg.into());
+        }
+    }
+
+    /// Add a payment leg: `Pay` from the ops account to `to_address` for `micro_algos` microALGOs.
+    pub fn payment(mut self, to_address: &str, micro_algos: u64) -> Self {
+        self.legs.push(GroupLeg::Payment {
+            to: to_address.to_string(),
+            micro_algos,
+        });
+        self
+    }
+
+    /// Add an asset-transfer leg: move `amount` base units of `asset_id` from the ops account
+    /// to `to_address`.
+    pub fn asset_transfer(mut self, asset_id: u64, amount: u64, to_address: &str) -> Self {
+        self.legs.push(GroupLeg::AssetTransfer {
+            asset_id,
+            amount,
+            to: to_address.to_string(),
+        });
+        self
+    }
+
+    /// Add an ABI app-call leg on `app_id` with the given `method` signature and `args`.
+    /// Attach an optional foreign asset / foreign app with [`foreign_asset`](Self::foreign_asset)
+    /// / [`foreign_app`](Self::foreign_app) immediately after this call.
+    pub fn call_app(mut self, app_id: u64, method: Option<&str>, args: &[AppArg]) -> Self {
+        if app_id == 0 {
+            self.set_error("call_app() requires app_id > 0");
+        }
+        self.legs.push(GroupLeg::AppCall {
+            app_id,
+            method: method.map(|s| s.to_string()),
+            args: args.to_vec(),
+            foreign_asset: None,
+            foreign_app: None,
+        });
+        self
+    }
+
+    /// Attach a foreign asset to the most recently added [`call_app`](Self::call_app) leg.
+    pub fn foreign_asset(mut self, asset_id: u64) -> Self {
+        match self.legs.last_mut() {
+            Some(GroupLeg::AppCall { foreign_asset, .. }) => *foreign_asset = Some(asset_id),
+            _ => self.set_error("foreign_asset() must follow a call_app() leg"),
+        }
+        self
+    }
+
+    /// Attach a foreign app to the most recently added [`call_app`](Self::call_app) leg.
+    pub fn foreign_app(mut self, foreign_app_id: u64) -> Self {
+        match self.legs.last_mut() {
+            Some(GroupLeg::AppCall { foreign_app, .. }) => *foreign_app = Some(foreign_app_id),
+            _ => self.set_error("foreign_app() must follow a call_app() leg"),
+        }
+        self
+    }
+
+    /// Assign a shared group id to every leg, sign each with the ops account, broadcast the group
+    /// atomically, wait for confirmation, and return the group's representative transaction id.
+    ///
+    /// Fails (before any network I/O) if a builder misuse was recorded or if no legs were added.
+    pub fn sign_and_send(self) -> Result<String> {
+        if let Some(err) = self.error {
+            bail!("{err}");
+        }
+        if self.legs.is_empty() {
+            bail!("transaction group must contain at least one transaction");
+        }
+
+        let ops = self.ops;
+        let sk = ops.private_key_bytes()?;
+        let seed: [u8; 32] = sk
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("Secret key must be 32 bytes"))?;
+        let sender = ops.require_address()?;
+        let client = ops.algod_client()?;
+        let params = ops
+            .algod_call(|| client.suggested_params())
+            .map_err(|e| anyhow!("failed to fetch suggested params: {e}"))?;
+
+        // Build each leg into an unsigned transaction, preserving order.
+        let mut txns: Vec<algonaut::transaction::transaction::Transaction> =
+            Vec::with_capacity(self.legs.len());
+        for leg in &self.legs {
+            let tx = match leg {
+                GroupLeg::Payment { to, micro_algos } => {
+                    let to_addr = AlgoOps::parse_address(to)?;
+                    algonaut::transaction::Pay::new(
+                        sender,
+                        to_addr,
+                        algonaut::core::MicroAlgos(*micro_algos),
+                    )
+                    .note(AlgoOps::unique_note())
+                    .build(&params)
+                    .map_err(|e| anyhow!("failed to build payment transaction: {e}"))?
+                }
+                GroupLeg::AssetTransfer {
+                    asset_id,
+                    amount,
+                    to,
+                } => {
+                    let to_addr = AlgoOps::parse_address(to)?;
+                    algonaut::transaction::TransferAsset::new(
+                        sender,
+                        algonaut::core::AssetId(*asset_id),
+                        *amount,
+                        to_addr,
+                    )
+                    .note(AlgoOps::unique_note())
+                    .build(&params)
+                    .map_err(|e| anyhow!("failed to build asset transfer transaction: {e}"))?
+                }
+                GroupLeg::AppCall {
+                    app_id,
+                    method,
+                    args,
+                    foreign_asset,
+                    foreign_app,
+                } => {
+                    let fapps: Vec<u64> = foreign_app.iter().copied().collect();
+                    ops.build_call_app_tx_inner(
+                        *app_id,
+                        *foreign_asset,
+                        &fapps,
+                        method.as_deref(),
+                        args,
+                    )?
+                }
+            };
+            txns.push(tx);
+        }
+
+        // Assign the shared group id across all legs.
+        let group = algonaut::transaction::group::TransactionGroup::try_from(txns)
+            .map_err(|e| anyhow!("failed to assign group id: {e}"))?;
+
+        // Sign every leg with the ops account.
+        let account = algonaut::transaction::account::Account::from_seed(seed);
+        let mut signed: Vec<algonaut::transaction::SignedTransaction> = Vec::new();
+        for tx in group.into_transactions() {
+            let stx = account
+                .sign(tx)
+                .map_err(|e| anyhow!("failed to sign grouped transaction: {e}"))?;
+            signed.push(stx);
+        }
+
+        // Broadcast the group atomically and wait for confirmation.
+        let tx_id = ops
+            .algod_call(|| client.send_transactions(&signed))
+            .map_err(|e| anyhow!("failed to broadcast transaction group: {e}"))?
+            .tx_id;
+        ops.wait_for_confirmation(&tx_id, 10)?;
+        Ok(tx_id)
+    }
 }
 
 /// Application argument type, similar to Kotlin variant handling.
