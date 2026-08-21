@@ -2,13 +2,27 @@
 //! `block_seed`, `suggested_params`). In the `integration` target, which a bare
 //! `cargo test` skips; run with `cargo test --test integration`.
 
+use crate::support::setup_localnet;
 use crate::support::test_util::{self, localnet_config};
 use algo_ops::AlgoOps;
+
+// A freshly-started dev-mode localnet sits at round 0 until a transaction
+// produces a block, so `round`/`last_round` are legitimately 0 on a brand-new
+// chain (as in CI). Fund an account first: on a fresh chain that submits a
+// transaction and advances past genesis, making the assertions meaningful;
+// on a warm chain the account is already funded and the round is already > 0.
+fn advance_chain_or_panic() {
+    let cfg = localnet_config();
+    setup_localnet::ensure_localnet_accounts_funded(&cfg, &[test_util::ADDRESS_SPEND]).expect(
+        "Failed to ensure localnet test accounts funded; install algokit and start localnet",
+    );
+}
 
 #[test]
 #[cfg(not(target_os = "ios"))]
 pub fn round_returns_committed_round() {
     test_util::assert_localnet_available();
+    advance_chain_or_panic();
     let ops = AlgoOps::new_for_algorand(None, None, Some(localnet_config()));
     let round = ops.round().expect("round should succeed on localnet");
     assert!(
@@ -21,6 +35,7 @@ pub fn round_returns_committed_round() {
 #[cfg(not(target_os = "ios"))]
 pub fn suggested_params_are_populated() {
     test_util::assert_localnet_available();
+    advance_chain_or_panic();
     let ops = AlgoOps::new_for_algorand(None, None, Some(localnet_config()));
     let params = ops
         .suggested_params()
@@ -46,6 +61,7 @@ pub fn suggested_params_are_populated() {
 #[cfg(not(target_os = "ios"))]
 pub fn block_seed_is_32_bytes() {
     test_util::assert_localnet_available();
+    advance_chain_or_panic();
     let ops = AlgoOps::new_for_algorand(None, None, Some(localnet_config()));
 
     // The last committed round is guaranteed to have a block; read its seed.
