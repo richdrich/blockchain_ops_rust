@@ -11,6 +11,8 @@ mod support;
 mod account_balance;
 #[path = "ops/address_derivation.rs"]
 mod address_derivation;
+#[path = "ops/algod_reads.rs"]
+mod algod_reads;
 #[path = "ops/asset_holding.rs"]
 mod asset_holding;
 #[path = "ops/change_reserve.rs"]
