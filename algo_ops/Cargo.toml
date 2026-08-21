@@ -1,6 +1,6 @@
 [package]
 name = "algo_ops"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Algorand implementation of the blockchain_ops traits, over algonaut."
 license = "MIT OR Apache-2.0"
@@ -18,7 +18,7 @@ autotests = false
 # `version` is required to publish to crates.io: the path is used in-workspace,
 # the version when resolving the published crate. Kept in lockstep with
 # blockchain_ops's version (both bumped together by `cargo set-version`).
-blockchain_ops = { path = "../blockchain_ops", version = "0.6.0" }
+blockchain_ops = { path = "../blockchain_ops", version = "0.6.1" }
 algonaut = "0.8.0"
 anyhow = "1"
 base64 = "0.21"
@@ -44,6 +44,9 @@ test-support = ["dep:visibility"]
 [dev-dependencies]
 # Simple test-writer logging in the ported test-support helper.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The submit/confirm integration test acts as a consumer that builds and signs
+# its own transaction with its own SDK, then submits the raw bytes via algo_ops.
+algonaut = "0.8.0"
 # Self dev-dependency so this crate's own `tests/` (separate crates that see only
 # the public API) build with `test-support` on — keeping a bare `cargo test`
 # working without extra flags.

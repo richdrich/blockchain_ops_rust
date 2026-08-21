@@ -42,6 +42,37 @@ impl Default for AlgoChainConfig {
     }
 }
 
+/// Neutral snapshot of the algod suggested transaction parameters, returned by
+/// [`AlgoOps::suggested_params`].
+///
+/// Carries only plain types (no `algonaut` types on the boundary) so a consumer built against
+/// a different `algonaut` version can size a payment without a version bump. These are the
+/// fields a payment builder needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlgoSuggestedParams {
+    /// The last committed round the node had seen when it suggested these params.
+    pub last_round: u64,
+    /// The network minimum transaction fee (not per byte), in microALGOs.
+    pub min_fee: u64,
+    /// The 32-byte genesis hash of the network.
+    pub genesis_hash: [u8; 32],
+    /// The genesis id string of the network (e.g. `"testnet-v1.0"`).
+    pub genesis_id: String,
+}
+
+/// Neutral view of a pending or confirmed transaction, returned by
+/// [`AlgoOps::confirmed_transaction`].
+///
+/// Carries only plain types (no `algonaut` types on the boundary) so a consumer built against
+/// a different `algonaut` version can read a confirmation back without a version bump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedTxn {
+    /// The round the transaction was confirmed in; `0` while it is still pending.
+    pub confirmed_round: u64,
+    /// The transaction note, decoded from its on-chain bytes; `None` if it carried no note.
+    pub note: Option<Vec<u8>>,
+}
+
 /// Minimal key provider trait analogous to the Kotlin IKeyProvider interface.
 pub trait KeyProvider: Send + Sync {
     fn get_id(&self) -> Option<String> {
@@ -1003,6 +1034,133 @@ impl AlgoOps {
             anyhow!("failed to fetch account information for {account_address}: {e}")
         })?;
         Ok(info.amount)
+    }
+
+    /// Return the last committed round (algod `GET /v2/status` → `last-round`).
+    ///
+    /// Backs a node's "current round". Routed through `algod_call` for retry + blocking; a
+    /// [`AlgoErrorKind::HostUnreachable`](crate::error::AlgoErrorKind::HostUnreachable) error is
+    /// surfaced so a consumer can skip while the node is down.
+    pub fn round(&self) -> Result<u64> {
+        let client = self.algod_client()?;
+        let status = match self.algod_call(|| client.status()) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("node_status", &e.to_string()).into());
+            }
+            Err(e) => return Err(anyhow!("failed to get node status: {e}")),
+        };
+        Ok(status.last_round.0)
+    }
+
+    /// Return the 32-byte VRF block seed for `round` (algod `GET /v2/blocks/{round}` →
+    /// `block.seed`). Backs seed-based selection. Same unreachable-node behaviour as [`round`](Self::round).
+    ///
+    /// The seed is decoded from the block model, so no `algonaut` types cross the boundary.
+    pub fn block_seed(&self, round: u64) -> Result<Vec<u8>> {
+        let client = self.algod_client()?;
+        let block = match self.algod_call(|| client.block(round)) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("block", &e.to_string()).into());
+            }
+            Err(e) => return Err(anyhow!("failed to fetch block {round}: {e}")),
+        };
+        let seed = block
+            .block
+            .seed
+            .ok_or_else(|| anyhow!("block {round} did not contain a seed"))?
+            .0;
+        if seed.len() != 32 {
+            bail!("block {round} seed is {} bytes, expected 32", seed.len());
+        }
+        Ok(seed)
+    }
+
+    /// Return the suggested transaction params as a neutral [`AlgoSuggestedParams`]
+    /// (algod `GET /v2/transactions/params`). Plain types only; same unreachable-node
+    /// behaviour as [`round`](Self::round).
+    pub fn suggested_params(&self) -> Result<AlgoSuggestedParams> {
+        let client = self.algod_client()?;
+        let params = match self.algod_call(|| client.suggested_params()) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("suggested_params", &e.to_string()).into());
+            }
+            Err(e) => return Err(anyhow!("failed to fetch suggested params: {e}")),
+        };
+        Ok(AlgoSuggestedParams {
+            last_round: params.last_round.0,
+            min_fee: params.min_fee.0,
+            genesis_hash: params.genesis_hash.0,
+            genesis_id: params.genesis_id,
+        })
+    }
+
+    /// Submit an already-signed, MessagePack-encoded transaction (algod
+    /// `POST /v2/transactions`, raw-transaction broadcast) and return its transaction id.
+    ///
+    /// The caller builds and signs with its own SDK, so only bytes cross the boundary — this
+    /// keeps the primitive independent of `algo_ops`'s `algonaut` version. Routed through
+    /// `algod_call` for retry + blocking; surfaces `AlgoError::HostUnreachable` when the node
+    /// is down. Unlike the high-level builders, this does not wait for confirmation — poll with
+    /// [`confirmed_transaction`](Self::confirmed_transaction) or
+    /// [`wait_for_confirmation`](Self::wait_for_confirmation).
+    pub fn submit_signed(&self, signed_txn: &[u8]) -> Result<String> {
+        if signed_txn.is_empty() {
+            bail!("signed_txn must not be empty");
+        }
+        let client = self.algod_client()?;
+        let resp = match self.algod_call(|| client.send_raw(signed_txn)) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("send_raw", &e.to_string()).into());
+            }
+            Err(e) => return Err(anyhow!("send_raw failed: {e}")),
+        };
+        Ok(resp.tx_id)
+    }
+
+    /// Read a pending or confirmed transaction (algod `GET /v2/transactions/pending/{txid}`),
+    /// exposing the confirmed round and the decoded note as a neutral [`ConfirmedTxn`].
+    ///
+    /// Returns `Ok(None)` when the node no longer knows the txid (dropped/expired/not yet seen);
+    /// while still pending the transaction is known but `confirmed_round == 0`. Backs reading
+    /// anchored bytes back from the chain and confirming an anchor landed. Surfaces
+    /// `AlgoError::HostUnreachable` when the node is down.
+    pub fn confirmed_transaction(&self, txid: &str) -> Result<Option<ConfirmedTxn>> {
+        if txid.trim().is_empty() {
+            bail!("txid must not be empty");
+        }
+        let client = self.algod_client()?;
+        let tx_id_obj = algonaut::core::TransactionId::from(txid);
+        let resp = match self.algod_call(|| client.pending_transaction(&tx_id_obj)) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("pending_transaction", &e.to_string()).into());
+            }
+            // The node does not know this txid (404) or a non-fatal read error: report "not
+            // found" so callers can poll without special-casing the node's absent-txn response.
+            Err(_) => return Ok(None),
+        };
+
+        let confirmed_round = resp.confirmed_round.unwrap_or(0);
+        // The inner `txn` is an internally-tagged enum whose every variant carries a base64
+        // `note`; serialize it and read that field rather than matching all transaction types.
+        let note = match &resp.txn.txn {
+            Some(txn) => {
+                let v = serde_json::to_value(txn)
+                    .map_err(|e| anyhow!("failed to serialize pending transaction: {e}"))?;
+                v.get("note")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| general_purpose::STANDARD.decode(s).ok())
+            }
+            None => None,
+        };
+        Ok(Some(ConfirmedTxn {
+            confirmed_round,
+            note,
+        }))
     }
 
     pub fn set_asset_clawback_to_app(&self, app_id: u64, asset_id: u64) -> Result<()> {

@@ -11,6 +11,8 @@ mod support;
 
 #[path = "ops/account_balance_localnet.rs"]
 mod account_balance_localnet;
+#[path = "ops/algod_reads_localnet.rs"]
+mod algod_reads_localnet;
 #[path = "ops/asset_clawback_creator_localnet.rs"]
 mod asset_clawback_creator_localnet;
 #[path = "ops/asset_configured_creator_localnet.rs"]
@@ -21,3 +23,5 @@ mod asset_manager_creator_localnet;
 mod dapp_app_integration_localnet;
 #[path = "ops/transaction_group_localnet.rs"]
 mod transaction_group_localnet;
+#[path = "ops/txn_submit_localnet.rs"]
+mod txn_submit_localnet;
