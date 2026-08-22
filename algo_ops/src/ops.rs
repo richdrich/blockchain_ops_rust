@@ -1164,6 +1164,11 @@ impl AlgoOps {
     /// confirmed transaction carries exactly this note. Backs a peer confirming "does a confirmed
     /// transaction with this note exist?" for a transaction it did not submit. Surfaces
     /// `AlgoError::HostUnreachable` when the indexer is down.
+    ///
+    /// The exact match is assumed to be on the indexer's first result page: pagination
+    /// (`limit`/`next`) is left unset, so only the first page is scanned. For a note used as a
+    /// unique key (e.g. a 32-byte anchor root) a collision beyond the first page is not a practical
+    /// concern.
     pub fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>> {
         if note.is_empty() {
             bail!("note must not be empty");
@@ -1171,6 +1176,8 @@ impl AlgoOps {
         let client = self.indexer_client()?;
         // The indexer expects the note-prefix query parameter base64-encoded.
         let note_prefix = general_purpose::STANDARD.encode(note);
+        // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
+        // the name it drives any algonaut future, indexer calls included.
         let resp = match self.algod_call(|| {
             client.search_for_transactions(
                 None,               // limit
