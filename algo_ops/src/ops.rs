@@ -60,18 +60,10 @@ pub struct AlgoSuggestedParams {
     pub genesis_id: String,
 }
 
-/// Neutral view of a pending or confirmed transaction, returned by
-/// [`AlgoOps::confirmed_transaction`].
-///
-/// Carries only plain types (no `algonaut` types on the boundary) so a consumer built against
-/// a different `algonaut` version can read a confirmation back without a version bump.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfirmedTxn {
-    /// The round the transaction was confirmed in; `0` while it is still pending.
-    pub confirmed_round: u64,
-    /// The transaction note, decoded from its on-chain bytes; `None` if it carried no note.
-    pub note: Option<Vec<u8>>,
-}
+// Neutral view of a pending or confirmed transaction. Defined in `blockchain_ops` alongside the
+// `TransactionQueryOps` trait it is returned by; re-exported here so `algo_ops::ConfirmedTxn` and
+// `crate::ops::ConfirmedTxn` keep resolving.
+pub use blockchain_ops::ConfirmedTxn;
 
 /// Minimal key provider trait analogous to the Kotlin IKeyProvider interface.
 pub trait KeyProvider: Send + Sync {
@@ -1160,6 +1152,69 @@ impl AlgoOps {
         Ok(Some(ConfirmedTxn {
             confirmed_round,
             note,
+        }))
+    }
+
+    /// Find a confirmed transaction whose note exactly equals `note` (indexer
+    /// `GET /v2/transactions?note-prefix=...`), returned as a neutral [`ConfirmedTxn`].
+    ///
+    /// The indexer only supports a note *prefix* filter, so this asks for the base64-encoded note
+    /// as the prefix and then keeps only a candidate whose full note bytes equal `note` — a
+    /// transaction whose note merely starts with `note` is rejected. Returns `Ok(None)` when no
+    /// confirmed transaction carries exactly this note. Backs a peer confirming "does a confirmed
+    /// transaction with this note exist?" for a transaction it did not submit. Surfaces
+    /// `AlgoError::HostUnreachable` when the indexer is down.
+    pub fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>> {
+        if note.is_empty() {
+            bail!("note must not be empty");
+        }
+        let client = self.indexer_client()?;
+        // The indexer expects the note-prefix query parameter base64-encoded.
+        let note_prefix = general_purpose::STANDARD.encode(note);
+        let resp = match self.algod_call(|| {
+            client.search_for_transactions(
+                None,               // limit
+                None,               // next
+                Some(&note_prefix), // note_prefix
+                None,               // tx_type
+                None,               // sig_type
+                None,               // transaction_id
+                None,               // round
+                None,               // min_round
+                None,               // max_round
+                None,               // asset_id
+                None,               // before_time
+                None,               // after_time
+                None,               // currency_greater_than
+                None,               // currency_less_than
+                None,               // address
+                None,               // address_role
+                None,               // exclude_close_to
+                None,               // rekey_to
+                None,               // app_id
+            )
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(
+                    AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
+                );
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Prefix matches can include longer notes; keep only an exact, confirmed match.
+        let hit = resp.transactions.into_iter().find(|txn| {
+            txn.confirmed_round.is_some_and(|r| r > 0)
+                && txn.note.as_ref().map(|b| b.0.as_slice()) == Some(note)
+        });
+        let Some(txn) = hit else {
+            return Ok(None);
+        };
+        Ok(Some(ConfirmedTxn {
+            // `hit` already guarantees `confirmed_round` is `Some(> 0)`.
+            confirmed_round: txn.confirmed_round.unwrap_or(0),
+            note: txn.note.map(|b| b.0),
         }))
     }
 
