@@ -6,6 +6,7 @@
 //! `algo_ops` crate. See `spec/algo_ops_api_surface.md`.
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// Operations meaningful against any blockchain.
 ///
@@ -47,6 +48,38 @@ pub trait BlockChainOps {
     /// Wait for a transaction to confirm, giving up after `timeout` units (chain-defined; for
     /// Algorand, rounds).
     fn wait_for_confirmation(&self, tx_id: &str, timeout: u64) -> Result<()>;
+}
+
+/// Neutral view of a pending or confirmed transaction, returned by the [`TransactionQueryOps`]
+/// reads.
+///
+/// Carries only plain types (no chain-SDK types on the boundary) so a consumer built against a
+/// different SDK version can read a confirmation back without a version bump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedTxn {
+    /// The round the transaction was confirmed in; `0` while it is still pending.
+    pub confirmed_round: u64,
+    /// The transaction note, decoded from its on-chain bytes; `None` if it carried no note.
+    pub note: Option<Vec<u8>>,
+}
+
+/// Reads that locate a confirmed transaction and return it as a neutral [`ConfirmedTxn`].
+///
+/// Opt-in (like [`AssetOps`]) rather than part of [`BlockChainOps`]: while most chains carry a
+/// free-form note on a transaction, *searching* for a confirmed transaction by its note needs
+/// indexer-style infrastructure that not every chain provides. Implemented only by chains that
+/// can serve these lookups.
+pub trait TransactionQueryOps {
+    /// Look up a transaction by its id, returning `None` when the chain no longer knows it.
+    ///
+    /// While the transaction is still pending it is known but its `confirmed_round` is `0`.
+    fn confirmed_transaction(&self, tx_id: &str) -> Result<Option<ConfirmedTxn>>;
+
+    /// Find a confirmed transaction whose note exactly equals `note`, or `None` if there is none.
+    ///
+    /// Matching is on the full note bytes: a transaction whose note merely starts with `note` is
+    /// not a match.
+    fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>>;
 }
 
 /// Operations for chains that have first-class assets (Algorand Standard Assets, Ethereum

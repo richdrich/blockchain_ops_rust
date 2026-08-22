@@ -13,6 +13,7 @@ categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

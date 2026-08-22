@@ -1,7 +1,8 @@
 //! Algorand implementation of the [`blockchain_ops`] traits, over `algonaut`.
 //!
-//! `AlgoOps` is the low-level Algorand operations struct; it implements [`BlockChainOps`] and
-//! [`AssetOps`] and provides the Algorand-specific [`AlgoOps::new_for_algorand`] constructor.
+//! `AlgoOps` is the low-level Algorand operations struct; it implements [`BlockChainOps`],
+//! [`AssetOps`], and [`TransactionQueryOps`] and provides the Algorand-specific
+//! [`AlgoOps::new_for_algorand`] constructor.
 
 #[macro_use]
 mod logging;
@@ -17,6 +18,11 @@ pub use ops::{
 
 use anyhow::Result;
 use blockchain_ops::{AssetOps, BlockChainOps};
+
+// Re-exported so consumers can bring the query trait into scope as `algo_ops::TransactionQueryOps`
+// (alongside `algo_ops::ConfirmedTxn`) without also depending on `blockchain_ops` directly. The
+// re-export also brings the name into this module for the `impl` below.
+pub use blockchain_ops::TransactionQueryOps;
 
 /// Number of micro-units in one whole ALGO.
 const MICRO_PER_ALGO: f64 = 1_000_000.0;
@@ -75,6 +81,16 @@ impl AssetOps for AlgoOps {
 
     fn asset_holding(&self, account: &str, asset_id: u64) -> Result<u64> {
         AlgoOps::asset_holding(self, account, asset_id)
+    }
+}
+
+impl TransactionQueryOps for AlgoOps {
+    fn confirmed_transaction(&self, tx_id: &str) -> Result<Option<ConfirmedTxn>> {
+        AlgoOps::confirmed_transaction(self, tx_id)
+    }
+
+    fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>> {
+        AlgoOps::find_transaction_by_note(self, note)
     }
 }
 
