@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "blockchain_ops",
     "algo_ops",
+    "sidewinder_ops",
 ]
 
 # Clippy backlog, silenced centrally so the quality gate can pass while it is
