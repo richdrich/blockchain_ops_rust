@@ -1,6 +1,6 @@
 [package]
 name = "blockchain_ops"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 description = "Chain-agnostic blockchain operation traits (BlockChainOps, AssetOps)."
 license = "MIT OR Apache-2.0"
@@ -13,6 +13,7 @@ categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true
