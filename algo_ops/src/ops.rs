@@ -1155,74 +1155,125 @@ impl AlgoOps {
         }))
     }
 
+    /// Scan the indexer's note-prefix results for the first confirmed transaction whose note
+    /// satisfies `matches`, returned as a neutral [`ConfirmedTxn`], or `Ok(None)` if none does.
+    ///
+    /// Shared by [`AlgoOps::find_transaction_by_note`] and
+    /// [`AlgoOps::find_transaction_by_note_prefix`]. The indexer only supports a note *prefix* filter
+    /// (it base64-encodes the raw bytes and matches whole leading bytes — there is no sub-byte
+    /// matching), so both callers pass the same `query` bytes as the server-side prefix and narrow the
+    /// candidates with `matches`: full-note equality for the exact lookup, `starts_with` for the
+    /// prefix lookup.
+    ///
+    /// Result pages are walked via the indexer's `next` token until a match is found or the results
+    /// are exhausted, so the wanted hit is found even when many transactions share `query` as a prefix
+    /// and it does not fall on the first page. `query` must be non-empty (an empty prefix matches every
+    /// note); the callers enforce that. Surfaces `AlgoError::HostUnreachable` when the indexer is down.
+    fn find_confirmed_note_matching(
+        &self,
+        query: &[u8],
+        matches: impl Fn(&[u8]) -> bool,
+    ) -> Result<Option<ConfirmedTxn>> {
+        let client = self.indexer_client()?;
+        // The indexer expects the note-prefix query parameter base64-encoded.
+        let note_prefix = general_purpose::STANDARD.encode(query);
+        let mut next: Option<String> = None;
+        loop {
+            let next_page = next.clone();
+            // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
+            // the name it drives any algonaut future, indexer calls included.
+            let resp = match self.algod_call(|| {
+                client.search_for_transactions(
+                    None,                 // limit
+                    next_page.as_deref(), // next (pagination token)
+                    Some(&note_prefix),   // note_prefix
+                    None,                 // tx_type
+                    None,                 // sig_type
+                    None,                 // transaction_id
+                    None,                 // round
+                    None,                 // min_round
+                    None,                 // max_round
+                    None,                 // asset_id
+                    None,                 // before_time
+                    None,                 // after_time
+                    None,                 // currency_greater_than
+                    None,                 // currency_less_than
+                    None,                 // address
+                    None,                 // address_role
+                    None,                 // exclude_close_to
+                    None,                 // rekey_to
+                    None,                 // app_id
+                )
+            }) {
+                Ok(v) => v,
+                Err(e) if AlgoError::is_host_unreachable(&e) => {
+                    return Err(
+                        AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
+                    );
+                }
+                Err(e) => return Err(e),
+            };
+
+            // The server-side filter already restricts to notes starting with `query`; `matches` is
+            // the caller's narrowing (exact equality, or a defensive `starts_with` re-check).
+            let hit = resp.transactions.into_iter().find(|txn| {
+                txn.confirmed_round.is_some_and(|r| r > 0)
+                    && txn.note.as_ref().is_some_and(|b| matches(b.0.as_slice()))
+            });
+            if let Some(txn) = hit {
+                return Ok(Some(ConfirmedTxn {
+                    // `hit` already guarantees `confirmed_round` is `Some(> 0)`.
+                    confirmed_round: txn.confirmed_round.unwrap_or(0),
+                    note: txn.note.map(|b| b.0),
+                }));
+            }
+
+            // Advance to the next page, or stop when the indexer reports no more results.
+            match resp.next_token {
+                Some(token) if !token.is_empty() => next = Some(token),
+                _ => return Ok(None),
+            }
+        }
+    }
+
     /// Find a confirmed transaction whose note exactly equals `note` (indexer
-    /// `GET /v2/transactions?note-prefix=...`), returned as a neutral [`ConfirmedTxn`].
+    /// `GET /v2/transactions?note-prefix=...`), returned as a neutral [`ConfirmedTxn`], or `Ok(None)`.
     ///
-    /// The indexer only supports a note *prefix* filter, so this asks for the base64-encoded note
-    /// as the prefix and then keeps only a candidate whose full note bytes equal `note` — a
-    /// transaction whose note merely starts with `note` is rejected. Returns `Ok(None)` when no
-    /// confirmed transaction carries exactly this note. Backs a peer confirming "does a confirmed
-    /// transaction with this note exist?" for a transaction it did not submit. Surfaces
-    /// `AlgoError::HostUnreachable` when the indexer is down.
-    ///
-    /// The exact match is assumed to be on the indexer's first result page: pagination
-    /// (`limit`/`next`) is left unset, so only the first page is scanned. For a note used as a
-    /// unique key (e.g. a 32-byte anchor root) a collision beyond the first page is not a practical
-    /// concern.
+    /// The indexer only supports a note *prefix* filter, so this asks for the base64-encoded note as
+    /// the prefix and keeps only a candidate whose full note bytes equal `note` — a transaction whose
+    /// note merely starts with `note` is rejected. Backs a peer confirming "does a confirmed
+    /// transaction with this note exist?" for a transaction it did not submit. Walks all result pages
+    /// (see `find_confirmed_note_matching`) so the exact match is found even behind a run of longer
+    /// notes sharing it as a prefix; surfaces `AlgoError::HostUnreachable` when the indexer is down.
     pub fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>> {
         if note.is_empty() {
             bail!("note must not be empty");
         }
-        let client = self.indexer_client()?;
-        // The indexer expects the note-prefix query parameter base64-encoded.
-        let note_prefix = general_purpose::STANDARD.encode(note);
-        // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
-        // the name it drives any algonaut future, indexer calls included.
-        let resp = match self.algod_call(|| {
-            client.search_for_transactions(
-                None,               // limit
-                None,               // next
-                Some(&note_prefix), // note_prefix
-                None,               // tx_type
-                None,               // sig_type
-                None,               // transaction_id
-                None,               // round
-                None,               // min_round
-                None,               // max_round
-                None,               // asset_id
-                None,               // before_time
-                None,               // after_time
-                None,               // currency_greater_than
-                None,               // currency_less_than
-                None,               // address
-                None,               // address_role
-                None,               // exclude_close_to
-                None,               // rekey_to
-                None,               // app_id
-            )
-        }) {
-            Ok(v) => v,
-            Err(e) if AlgoError::is_host_unreachable(&e) => {
-                return Err(
-                    AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
-                );
-            }
-            Err(e) => return Err(e),
-        };
+        self.find_confirmed_note_matching(note, |candidate| candidate == note)
+    }
 
-        // Prefix matches can include longer notes; keep only an exact, confirmed match.
-        let hit = resp.transactions.into_iter().find(|txn| {
-            txn.confirmed_round.is_some_and(|r| r > 0)
-                && txn.note.as_ref().map(|b| b.0.as_slice()) == Some(note)
-        });
-        let Some(txn) = hit else {
-            return Ok(None);
-        };
-        Ok(Some(ConfirmedTxn {
-            // `hit` already guarantees `confirmed_round` is `Some(> 0)`.
-            confirmed_round: txn.confirmed_round.unwrap_or(0),
-            note: txn.note.map(|b| b.0),
-        }))
+    /// Find a confirmed transaction whose note *starts with* `prefix` — a **byte** prefix, not a bit
+    /// prefix — returned as a neutral [`ConfirmedTxn`], or `Ok(None)` when none is found.
+    ///
+    /// The byte-prefix sibling of [`AlgoOps::find_transaction_by_note`]: same indexer note-prefix
+    /// query (the indexer base64-encodes the raw bytes and matches whole leading bytes — there is no
+    /// sub-byte matching), but a note *longer* than `prefix` is a valid match, provided its leading
+    /// bytes equal `prefix` (a defensive `starts_with` re-check of the server-side match). Callers
+    /// wanting a field-aligned prefix must lay the note out on byte boundaries (e.g. sidewinder's
+    /// fixed-width 8-byte big-endian anchor round). Walks all result pages (see
+    /// `find_confirmed_note_matching`) and surfaces `AlgoError::HostUnreachable` when the indexer is
+    /// down.
+    ///
+    /// This delivers the single-hit "is there *any* confirmed transaction with this note prefix?"
+    /// primitive (`is_some()`); returning all matches or the lowest-`confirmed_round` match is
+    /// deliberately out of scope.
+    pub fn find_transaction_by_note_prefix(&self, prefix: &[u8]) -> Result<Option<ConfirmedTxn>> {
+        // An empty prefix would match every note, so reject it (as the exact method rejects an empty
+        // note).
+        if prefix.is_empty() {
+            bail!("prefix must not be empty");
+        }
+        self.find_confirmed_note_matching(prefix, |candidate| candidate.starts_with(prefix))
     }
 
     pub fn set_asset_clawback_to_app(&self, app_id: u64, asset_id: u64) -> Result<()> {

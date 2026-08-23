@@ -78,8 +78,8 @@ manual, after which continuous integration (CI) is token-free.
 
    f. **Store two repository secrets** (repo → Settings → Secrets and variables →
       Actions), with exactly these names — they are what `deploy.yml` reads:
-      - `RELEASE_PLZ_APP_ID` — the numeric App ID from step (d).
-      - `RELEASE_PLZ_APP_PRIVATE_KEY` — the full contents of the `.pem` file.
+      - `VERSION_BUMP_APP_ID` — the numeric App ID from step (d).
+      - `VERSION_BUMP_APP_PRIVATE_KEY` — the full contents of the `.pem` file.
 
    The deploy job's `bump` step exchanges these for a short-lived token via
    `actions/create-github-app-token` and authors the bump PR with it.
