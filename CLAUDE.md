@@ -45,6 +45,7 @@
 1. Run `cargo test` for the workspace and verify all tests pass with no warnings.
 2. Ensure the `blockchain_ops` and `algo_ops` crates build (`cargo build`).
 3. Ensure `cargo clippy --workspace --all-targets` and `cargo fmt --check` pass.
+4. Build the docs with warnings denied — `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` — so broken or private intra-doc links fail locally rather than in continuous integration. Continuous integration runs this and treats warnings as errors.
 
 ## Git notes
 
