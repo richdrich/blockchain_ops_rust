@@ -17,6 +17,8 @@ mod algod_reads;
 mod asset_holding;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
+#[path = "ops/find_transactions_by_note_prefix.rs"]
+mod find_transactions_by_note_prefix;
 #[path = "ops/generate_keypair.rs"]
 mod generate_keypair;
 #[path = "ops/node_errors.rs"]

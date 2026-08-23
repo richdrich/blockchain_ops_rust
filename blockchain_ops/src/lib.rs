@@ -88,6 +88,15 @@ pub trait TransactionQueryOps {
     /// whose note is longer than `prefix` is a valid match, provided its leading bytes equal `prefix`.
     /// Callers wanting a field-aligned prefix must lay the note out on byte boundaries.
     fn find_transaction_by_note_prefix(&self, prefix: &[u8]) -> Result<Option<ConfirmedTxn>>;
+
+    /// Every confirmed transaction whose note *starts with* `prefix` — a **byte** prefix, not a bit
+    /// prefix — in the backend's result order, or an empty vec when none match.
+    ///
+    /// The list sibling of [`TransactionQueryOps::find_transaction_by_note_prefix`]: it returns every
+    /// confirmed match rather than the first, so a caller can aggregate over them (for example take
+    /// the maximum confirmed round). Callers wanting a field-aligned prefix must lay the note out on
+    /// byte boundaries.
+    fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>>;
 }
 
 /// Operations for chains that have first-class assets (Algorand Standard Assets, Ethereum
