@@ -13,7 +13,7 @@ node URL and bearer token.
 
 ```rust
 use algo_ops::AlgoOps;
-use sidewinder_ops::{SidewinderClient, SidewinderConfig, SidewinderOps};
+use sidewinder_ops::{AppArg, SidewinderClient, SidewinderConfig, SidewinderOps, TransactionRequest};
 
 let algo = AlgoOps::new_for_algorand(Some(passphrase), None, Some(chain_config));
 let client = SidewinderClient::from_algo_ops(
@@ -23,7 +23,20 @@ let client = SidewinderClient::from_algo_ops(
 
 let alive = client.health()?;
 let params = client.params()?;
-let txid = client.submit(&signed_txn_bytes)?;
+
+// Build, canonically encode, and sign a `Slot.set(slot_id, value)` with the enrolled key,
+// then submit it — `submit_transaction` does all three in one call.
+let request = TransactionRequest {
+    txn_type: 2, // the type the node binds `Slot.set` to
+    args: vec![AppArg::Bytes(slot_id), AppArg::Bytes(value)],
+    max_fee: params.min_fee,
+    first_valid: params.last_round,
+    last_valid: params.last_round + params.max_validity_window,
+    instance: params.instance_id,
+    note: None,
+    group: None,
+};
+let txid = client.submit_transaction(&request)?;
 let pending = client.status(&txid, false)?;
 ```
 
@@ -34,7 +47,11 @@ let pending = client.status(&txid, false)?;
 - Synchronous API over the async `reqwest` stack, driven on a per-call Tokio runtime — the same shape
   `algo_ops` uses over algod.
 - Certificate and proof bytes are surfaced opaque and are **not** verified (a v0.0.2 non-goal).
-- Transaction building and signing is issue #45; until then `submit` takes pre-encoded signed bytes.
+- The client owns the Sidewinder canonical MessagePack encoding, packs operation arguments with the
+  shared `algo_ops::AppArg` (the Algorand application-arguments / Algorand Request for Comments 4,
+  ARC-4, convention), and signs the canonical body with the enrolled `algo_ops` Ed25519 key
+  (`AlgoOps::sign_bytes`). `build_signed_transaction` returns the bytes and transaction identifier;
+  `submit_transaction` builds, signs, and submits. `submit` still accepts pre-encoded bytes directly.
 
 ## Tests
 

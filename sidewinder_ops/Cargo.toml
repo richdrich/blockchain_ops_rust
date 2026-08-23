@@ -25,14 +25,28 @@ base64 = "0.22"
 # `rt_block_on`), mirroring the algo_ops pattern. rustls avoids an OpenSSL build
 # dependency and matches the TLS backend already resolved in the workspace.
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# Canonical MessagePack: `rmp_serde` with `.with_struct_map()` matches the Sidewinder node's
+# `sidewinder-core` encoding (keyed maps, most-compact integers), and `serde_bytes` tags the
+# 32-byte / byte-string fields so they serialise as MessagePack `bin`. See `transaction.rs`.
+rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1"
+# SHA-512/256 is the Sidewinder content-address hash: the transaction identifier is the digest of
+# the canonical body (matching `sidewinder-core`'s `hash`).
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
 # Simple test-writer logging.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The transaction tests verify the produced signature against the sender key (the same check the
+# node makes), decode the packed body to assert its canonical MessagePack layout, and recompute the
+# content-address transaction identifier.
+ed25519-dalek = "2"
+rmpv = "1"
+sha2 = "0.10"
 
 [lints]
 workspace = true

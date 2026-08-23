@@ -7,6 +7,7 @@
 
 use crate::config::SidewinderConfig;
 use crate::error::SidewinderError;
+use crate::transaction::{SignedTransaction, TransactionRequest, build_signed};
 use crate::types::{
     NodeStatus, NodeStatusWire, OperationSchema, OperationSchemaWire, PendingTransaction,
     PendingWire, PostTransactionResponseWire, SuggestedParams, SuggestedParamsWire,
@@ -25,8 +26,9 @@ use std::time::Duration;
 pub trait SidewinderOps {
     /// Submit one canonically-encoded, signed transaction; returns the content-address identifier.
     ///
-    /// `signed_txn` is the raw MessagePack-encoded `SignedTransaction` bytes. Building and signing
-    /// them is issue #45; until then a caller supplies pre-encoded bytes.
+    /// `signed_txn` is the raw MessagePack-encoded `SignedTransaction` bytes. Build them with
+    /// [`SidewinderClient::build_signed_transaction`], or use
+    /// [`SidewinderClient::submit_transaction`] to build, sign, and submit in one call.
     fn submit(&self, signed_txn: &[u8]) -> Result<String>;
 
     /// Fetch the current response for a transaction. Set `proof` to also return the (opaque, v0)
@@ -61,7 +63,7 @@ const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_MS: u64 = 1_000;
 
 impl SidewinderClient {
-    /// Build a client from an Algorand operations handle (the signing key for #45) and endpoint config.
+    /// Build a client from an Algorand operations handle (which signs transactions) and endpoint config.
     pub fn from_algo_ops(algo: AlgoOps, config: SidewinderConfig) -> Self {
         Self { algo, config }
     }
@@ -74,6 +76,31 @@ impl SidewinderClient {
     /// The endpoint configuration.
     pub fn config(&self) -> &SidewinderConfig {
         &self.config
+    }
+
+    /// Build, canonically encode, and sign a transaction with the enrolled parent-chain key.
+    ///
+    /// The sender (`snd`) is this client's [`AlgoOps`] account public key, and the signature is a
+    /// plain Ed25519 over the canonical body ([`AlgoOps::sign_bytes`]). The returned
+    /// [`SignedTransaction`] carries both the bytes to submit and the transaction identifier. Errors
+    /// (as [`SidewinderErrorKind::InvalidTransaction`](crate::SidewinderErrorKind::InvalidTransaction))
+    /// if the handle holds no signing key or a field is not the required 32 bytes.
+    pub fn build_signed_transaction(
+        &self,
+        request: &TransactionRequest,
+    ) -> Result<SignedTransaction> {
+        let op = "build_signed_transaction";
+        let sender = self.algo.public_key_bytes().map_err(|e| {
+            SidewinderError::invalid_transaction(op, &format!("no signing key available: {e}"))
+        })?;
+        build_signed(op, request, sender, |bytes| self.algo.sign_bytes(bytes))
+    }
+
+    /// Build, sign, and [`submit`](SidewinderOps::submit) a transaction in one call; returns the
+    /// node's transaction identifier.
+    pub fn submit_transaction(&self, request: &TransactionRequest) -> Result<String> {
+        let signed = self.build_signed_transaction(request)?;
+        self.submit(&signed.bytes)
     }
 
     fn url(&self, path: &str) -> String {
