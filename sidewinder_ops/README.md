@@ -57,3 +57,8 @@ let pending = client.status(&txid, false)?;
 
 `cargo test -p sidewinder_ops` runs the `unit` bucket against an in-process mock HTTP node — no
 external services required.
+
+`cargo test -p sidewinder_ops --test integration` runs the external end-to-end bucket against a
+running Sidewinder node nest (build → sign → submit → poll-to-final → assert). It is configured from
+the environment and skips cleanly when the nest is unconfigured or unreachable — see
+[`tests/integration/README.md`](tests/integration/README.md).

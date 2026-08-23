@@ -52,10 +52,22 @@ sha2 = "0.10"
 workspace = true
 
 # ── Test targets ─────────────────────────────────────────────────────────────
-# One bucket for now: `unit` needs no external services — it drives the client
-# against an in-process mock HTTP node (tests/support/mock_node.rs). The external
-# multi-node integration test is issue #46 and lands as its own target.
+# Two buckets, after the algo_ops pattern:
+#   `unit`        — needs no external services; drives the client against an
+#                   in-process mock HTTP node (tests/support/mock_node.rs). Run
+#                   by a bare `cargo test`.
+#   `integration` — drives a real Sidewinder node nest, configured from the
+#                   environment. Marked `test = false` so a bare `cargo test`
+#                   skips it; run explicitly with `cargo test --test integration`.
+#                   It skips cleanly when the nest is unconfigured/unreachable
+#                   (see tests/integration/README.md).
 
 [[test]]
 name = "unit"
 path = "tests/unit.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+# Excluded from the default `cargo test`; opt in with `cargo test --test integration`.
+test = false
