@@ -1197,61 +1197,125 @@ impl AlgoOps {
         let note_prefix = general_purpose::STANDARD.encode(query);
         let mut next: Option<String> = None;
         loop {
-            let next_page = next.clone();
-            // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
-            // the name it drives any algonaut future, indexer calls included.
-            let resp = match self.algod_call(|| {
-                client.search_for_transactions(
-                    None,                 // limit
-                    next_page.as_deref(), // next (pagination token)
-                    Some(&note_prefix),   // note_prefix
-                    None,                 // tx_type
-                    None,                 // sig_type
-                    None,                 // transaction_id
-                    None,                 // round
-                    None,                 // min_round
-                    None,                 // max_round
-                    None,                 // asset_id
-                    None,                 // before_time
-                    None,                 // after_time
-                    None,                 // currency_greater_than
-                    None,                 // currency_less_than
-                    None,                 // address
-                    None,                 // address_role
-                    None,                 // exclude_close_to
-                    None,                 // rekey_to
-                    None,                 // app_id
-                )
-            }) {
-                Ok(v) => v,
-                Err(e) if AlgoError::is_host_unreachable(&e) => {
-                    return Err(
-                        AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
-                    );
-                }
-                Err(e) => return Err(e),
-            };
-
+            let (candidates, next_token) =
+                self.confirmed_notes_page(&client, &note_prefix, next.as_deref())?;
             // The server-side filter already restricts to notes starting with `query`; `matches` is
             // the caller's narrowing (exact equality, or a defensive `starts_with` re-check).
-            let hit = resp.transactions.into_iter().find(|txn| {
-                txn.confirmed_round.is_some_and(|r| r > 0)
-                    && txn.note.as_ref().is_some_and(|b| matches(b.0.as_slice()))
-            });
-            if let Some(txn) = hit {
+            if let Some((confirmed_round, note)) =
+                candidates.into_iter().find(|(_, note)| matches(note))
+            {
                 return Ok(Some(ConfirmedTxn {
-                    // `hit` already guarantees `confirmed_round` is `Some(> 0)`.
-                    confirmed_round: txn.confirmed_round.unwrap_or(0),
-                    note: txn.note.map(|b| b.0),
+                    confirmed_round,
+                    note: Some(note),
                 }));
             }
-
             // Advance to the next page, or stop when the indexer reports no more results.
-            match resp.next_token {
-                Some(token) if !token.is_empty() => next = Some(token),
-                _ => return Ok(None),
+            match next_token {
+                Some(token) => next = Some(token),
+                None => return Ok(None),
             }
         }
+    }
+
+    /// Collect *every* confirmed transaction whose note satisfies `matches` across all indexer
+    /// note-prefix result pages, each as a neutral [`ConfirmedTxn`], in the indexer's order.
+    ///
+    /// The list counterpart of [`AlgoOps::find_confirmed_note_matching`]: same base64 note-prefix
+    /// query and the same confirmed-and-`matches` narrowing, but it accumulates all hits instead of
+    /// returning the first. Walks all pages via the `next` token so a caller aggregating over the
+    /// results (for example the maximum confirmed round) sees matches beyond the first page.
+    /// `query` must be non-empty (the callers enforce that). Surfaces `AlgoError::HostUnreachable`
+    /// when the indexer is down.
+    fn collect_confirmed_notes_matching(
+        &self,
+        query: &[u8],
+        matches: impl Fn(&[u8]) -> bool,
+    ) -> Result<Vec<ConfirmedTxn>> {
+        let client = self.indexer_client()?;
+        let note_prefix = general_purpose::STANDARD.encode(query);
+        let mut found = Vec::new();
+        let mut next: Option<String> = None;
+        loop {
+            let (candidates, next_token) =
+                self.confirmed_notes_page(&client, &note_prefix, next.as_deref())?;
+            found.extend(
+                candidates
+                    .into_iter()
+                    .filter(|(_, note)| matches(note))
+                    .map(|(confirmed_round, note)| ConfirmedTxn {
+                        confirmed_round,
+                        note: Some(note),
+                    }),
+            );
+            match next_token {
+                Some(token) => next = Some(token),
+                None => return Ok(found),
+            }
+        }
+    }
+
+    /// Fetch one page of the indexer note-prefix search: `note_prefix` (already base64) as the
+    /// server-side filter, starting from the `next` pagination token. Returns the page's confirmed,
+    /// note-bearing candidates as `(confirmed_round, note)` pairs and the next-page token (`None`
+    /// when the indexer reports no more results). Shared by the find-first and collect-all scanners
+    /// so the 19-argument `search_for_transactions` call lives in one place. Surfaces
+    /// `AlgoError::HostUnreachable` when the indexer is down.
+    fn confirmed_notes_page(
+        &self,
+        client: &algonaut::Indexer,
+        note_prefix: &str,
+        next: Option<&str>,
+    ) -> Result<(Vec<(u64, Vec<u8>)>, Option<String>)> {
+        // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
+        // the name it drives any algonaut future, indexer calls included.
+        let resp = match self.algod_call(|| {
+            client.search_for_transactions(
+                None,              // limit
+                next,              // next (pagination token)
+                Some(note_prefix), // note_prefix
+                None,              // tx_type
+                None,              // sig_type
+                None,              // transaction_id
+                None,              // round
+                None,              // min_round
+                None,              // max_round
+                None,              // asset_id
+                None,              // before_time
+                None,              // after_time
+                None,              // currency_greater_than
+                None,              // currency_less_than
+                None,              // address
+                None,              // address_role
+                None,              // exclude_close_to
+                None,              // rekey_to
+                None,              // app_id
+            )
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(
+                    AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
+                );
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Keep only confirmed (`confirmed_round > 0`), note-bearing rows; the caller narrows further
+        // with its `matches` predicate.
+        let candidates = resp
+            .transactions
+            .into_iter()
+            .filter_map(|txn| {
+                let confirmed_round = txn.confirmed_round.filter(|r| *r > 0)?;
+                let note = txn.note.map(|b| b.0)?;
+                Some((confirmed_round, note))
+            })
+            .collect();
+        let next_token = match resp.next_token {
+            Some(token) if !token.is_empty() => Some(token),
+            _ => None,
+        };
+        Ok((candidates, next_token))
     }
 
     /// Find a confirmed transaction whose note exactly equals `note` (indexer
@@ -1292,6 +1356,30 @@ impl AlgoOps {
             bail!("prefix must not be empty");
         }
         self.find_confirmed_note_matching(prefix, |candidate| candidate.starts_with(prefix))
+    }
+
+    /// Every confirmed transaction whose note *starts with* `prefix` — a **byte** prefix, not a bit
+    /// prefix — each as a neutral [`ConfirmedTxn`], in the indexer's result order (this method does
+    /// not sort or deduplicate). Returns `Ok(vec![])` when nothing matches.
+    ///
+    /// The list sibling of [`AlgoOps::find_transaction_by_note_prefix`]: the same indexer note-prefix
+    /// query (the indexer base64-encodes the raw bytes and matches whole leading bytes — there is no
+    /// sub-byte matching) and the same defensive `starts_with` re-check, but it collects *every*
+    /// confirmed match rather than stopping at the first. That lets a caller aggregate over the set —
+    /// for sidewinder's cold-start / long-partition rejoin, the maximum round across all anchor
+    /// transactions, whose notes are laid out `tag ‖ round_be(8) ‖ root` so every anchor shares the
+    /// `tag` prefix. Callers wanting a field-aligned prefix must lay the note out on byte boundaries.
+    ///
+    /// Walks all indexer result pages (see `collect_confirmed_notes_matching`), so a caller taking a
+    /// maximum over the results does not miss matches beyond the first page. `prefix` must be
+    /// non-empty (an empty prefix matches every note). Surfaces `AlgoError::HostUnreachable` when the
+    /// indexer is down.
+    pub fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>> {
+        // An empty prefix would match every note, so reject it (as the single-match method does).
+        if prefix.is_empty() {
+            bail!("prefix must not be empty");
+        }
+        self.collect_confirmed_notes_matching(prefix, |candidate| candidate.starts_with(prefix))
     }
 
     pub fn set_asset_clawback_to_app(&self, app_id: u64, asset_id: u64) -> Result<()> {

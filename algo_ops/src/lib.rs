@@ -96,6 +96,10 @@ impl TransactionQueryOps for AlgoOps {
     fn find_transaction_by_note_prefix(&self, prefix: &[u8]) -> Result<Option<ConfirmedTxn>> {
         AlgoOps::find_transaction_by_note_prefix(self, prefix)
     }
+
+    fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>> {
+        AlgoOps::find_transactions_by_note_prefix(self, prefix)
+    }
 }
 
 impl AlgoOps {
