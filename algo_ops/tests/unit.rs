@@ -27,6 +27,8 @@ mod reserve_helpers;
 mod retry_logic;
 #[path = "ops/set_asset_clawback.rs"]
 mod set_asset_clawback;
+#[path = "ops/sign_bytes.rs"]
+mod sign_bytes;
 #[path = "ops/sign_notify_envelope.rs"]
 mod sign_notify_envelope;
 #[path = "ops/transaction_group.rs"]

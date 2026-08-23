@@ -456,6 +456,24 @@ impl AlgoOps {
         Ok(general_purpose::STANDARD.encode(signature.to_bytes()))
     }
 
+    /// Sign arbitrary bytes with this account's Ed25519 key, returning the raw 64-byte signature.
+    ///
+    /// This is a plain `Ed25519(sk, message)` over the exact bytes given, with no domain-separation
+    /// tag. It differs from [`AlgoOps::sign`] (which base64-encodes the signature for text callers)
+    /// and from [`AlgoOps::sign_notify_envelope`] (which prepends Algorand's `"MX"` byte-signing
+    /// tag). It is the form a Sidewinder canonical transaction body is signed with: the verifier
+    /// re-encodes the same canonical body and checks the signature over those bytes directly, so any
+    /// prefix here would make the signature fail to verify.
+    pub fn sign_bytes(&self, message: &[u8]) -> Result<[u8; 64]> {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk_bytes = self.private_key_bytes()?;
+        let sk_arr: [u8; 32] = sk_bytes
+            .try_into()
+            .map_err(|_| anyhow!("Secret key must be 32 bytes"))?;
+        let signing_key = SigningKey::from_bytes(&sk_arr);
+        Ok(signing_key.sign(message).to_bytes())
+    }
+
     /// Sign the canonical bingle-notify envelope with this account's key.
     ///
     /// Builds the fixed, newline-delimited UTF-8 message (NOT JSON)
@@ -2699,7 +2717,13 @@ impl<'a> TransactionGroupBuilder<'a> {
 }
 
 /// Application argument type, similar to Kotlin variant handling.
-#[derive(Debug, Clone)]
+///
+/// This is the Algorand application-arguments / Application Binary Interface (ABI) convention, which
+/// the Sidewinder client also packs operation arguments with (see `sidewinder_ops`): each argument
+/// is encoded on its own — a `Uint` as 8 big-endian bytes (an Algorand Request for Comments 4,
+/// ARC-4, `uint64`), and `Bytes` / `Utf8` as their raw bytes (the argument boundary carries the
+/// length, so no length prefix is added).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppArg {
     Bytes(Vec<u8>),
     Utf8(String),

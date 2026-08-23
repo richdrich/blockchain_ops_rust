@@ -44,6 +44,8 @@ test-support = ["dep:visibility"]
 [dev-dependencies]
 # Simple test-writer logging in the ported test-support helper.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The sign_bytes unit test verifies the raw signature against the public key.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 # The submit/confirm integration test acts as a consumer that builds and signs
 # its own transaction with its own SDK, then submits the raw bytes via algo_ops.
 algonaut = "0.8.0"

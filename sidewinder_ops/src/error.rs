@@ -22,6 +22,9 @@ pub enum SidewinderErrorKind {
     UnexpectedStatus,
     /// The node's response body could not be decoded (bad JSON, bad base64, unknown enum).
     MalformedResponse,
+    /// A transaction could not be built or encoded from the values supplied (caught client-side,
+    /// before any request is sent) — for example a field that is not the required 32 bytes.
+    InvalidTransaction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +113,16 @@ impl SidewinderError {
     pub fn malformed_response(operation: &str, message: &str) -> Self {
         Self {
             kind: SidewinderErrorKind::MalformedResponse,
+            operation: operation.to_string(),
+            status: None,
+            message: message.to_string(),
+        }
+    }
+
+    /// A locally-detected failure to build or encode a transaction (no request was sent).
+    pub fn invalid_transaction(operation: &str, message: &str) -> Self {
+        Self {
+            kind: SidewinderErrorKind::InvalidTransaction,
             operation: operation.to_string(),
             status: None,
             message: message.to_string(),
