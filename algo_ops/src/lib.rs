@@ -92,6 +92,10 @@ impl TransactionQueryOps for AlgoOps {
     fn find_transaction_by_note(&self, note: &[u8]) -> Result<Option<ConfirmedTxn>> {
         AlgoOps::find_transaction_by_note(self, note)
     }
+
+    fn find_transaction_by_note_prefix(&self, prefix: &[u8]) -> Result<Option<ConfirmedTxn>> {
+        AlgoOps::find_transaction_by_note_prefix(self, prefix)
+    }
 }
 
 impl AlgoOps {
