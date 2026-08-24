@@ -17,8 +17,9 @@ and `unit` checks (the `integration` localnet bucket also runs on every push to
 2. **Deploy on merge:** merging the PR pushes to `deployed` and triggers
    [`deploy.yml`](.github/workflows/deploy.yml), which:
    - re-runs the fast checks, unit tests, and the localnet integration bucket;
-   - publishes `blockchain_ops`, then `algo_ops`, to crates.io via Trusted
-     Publishing (OpenID Connect / OIDC) — no stored registry token;
+   - publishes `blockchain_ops`, then `algo_ops`, then `sidewinder_ops`, to
+     crates.io via Trusted Publishing (OpenID Connect / OIDC) — no stored
+     registry token (each is published before the crates that depend on it);
    - tags the released commit `vX.Y.Z`;
    - opens a next-patch version-bump PR on `master` (authored by the GitHub App
      so it triggers the required checks).
@@ -42,16 +43,27 @@ manual, after which continuous integration (CI) is token-free.
    cargo publish -p blockchain_ops
    ```
 
-   then, once it is visible on crates.io:
+   then, once each is visible on crates.io, publish the crates that depend on it,
+   in order:
 
    ```
    cargo publish -p algo_ops
    ```
 
-2. **Configure Trusted Publishing** for each crate on crates.io
-   (crate → Settings → Trusted Publishing): GitHub repository
-   `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After this the deploy
-   job authenticates via OIDC and no registry token is ever stored.
+   ```
+   cargo publish -p sidewinder_ops
+   ```
+
+   A crate must be bootstrapped this way **once, when it is first added** — a
+   Trusted Publisher cannot be configured on a crate that does not exist yet.
+   `sidewinder_ops` was added after `blockchain_ops`/`algo_ops` were already
+   published, so it needs its own one-time manual publish (of the current
+   `master` version) before the deploy job can publish it via OIDC.
+
+2. **Configure Trusted Publishing** for each crate on crates.io — `blockchain_ops`,
+   `algo_ops`, and `sidewinder_ops` (crate → Settings → Trusted Publishing):
+   GitHub repository `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After
+   this the deploy job authenticates via OIDC and no registry token is ever stored.
 
 3. **Set up the version-bump GitHub App** so the automated bump PR is authored
    by the App rather than the default `GITHUB_TOKEN` — the App's pull requests

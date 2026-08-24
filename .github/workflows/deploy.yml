@@ -6,9 +6,9 @@ name: deploy
 # deployment pull request (PR), `master` -> `deployed`, is merged. The flow:
 #   1. re-run every gate (fast checks, unit tests, and the localnet integration
 #      bucket) so nothing ships unless all are green;
-#   2. publish `blockchain_ops` then `algo_ops` (ordered — the second depends on
-#      the first) via crates.io Trusted Publishing (OpenID Connect / OIDC), with
-#      no stored registry token;
+#   2. publish `blockchain_ops`, then `algo_ops`, then `sidewinder_ops` (ordered —
+#      each depends on the one before) via crates.io Trusted Publishing (OpenID
+#      Connect / OIDC), with no stored registry token;
 #   3. tag the released commit `vX.Y.Z`;
 #   4. open a next-patch version-bump PR on `master` so it stays one patch ahead.
 #
@@ -96,11 +96,11 @@ jobs:
       - name: Authenticate to crates.io (OIDC)
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
-      # Publish the dependency first, then the dependent. `already-published` is
+      # Publish each dependency before its dependents. `already-published` is
       # tolerated so a re-run after a partial failure is safe. cargo waits for
       # the crate to appear in the index before returning, so the ordered publish
-      # resolves correctly.
-      - name: Publish blockchain_ops then algo_ops
+      # resolves correctly: blockchain_ops <- algo_ops <- sidewinder_ops.
+      - name: Publish blockchain_ops, algo_ops, then sidewinder_ops
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -117,6 +117,7 @@ jobs:
           }
           publish_one blockchain_ops
           publish_one algo_ops
+          publish_one sidewinder_ops
 
   # ── Tag the released commit vX.Y.Z (idempotent) ─────────────────────────────
   tag:
