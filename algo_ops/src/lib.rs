@@ -100,6 +100,30 @@ impl TransactionQueryOps for AlgoOps {
     fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>> {
         AlgoOps::find_transactions_by_note_prefix(self, prefix)
     }
+
+    fn find_transaction_by_note_and_sender(
+        &self,
+        note: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>> {
+        AlgoOps::find_transaction_by_note_and_sender(self, note, sender)
+    }
+
+    fn find_transaction_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>> {
+        AlgoOps::find_transaction_by_note_prefix_and_sender(self, prefix, sender)
+    }
+
+    fn find_transactions_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Vec<ConfirmedTxn>> {
+        AlgoOps::find_transactions_by_note_prefix_and_sender(self, prefix, sender)
+    }
 }
 
 impl AlgoOps {

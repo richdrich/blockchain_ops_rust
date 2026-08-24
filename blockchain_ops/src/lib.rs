@@ -97,6 +97,34 @@ pub trait TransactionQueryOps {
     /// the maximum confirmed round). Callers wanting a field-aligned prefix must lay the note out on
     /// byte boundaries.
     fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>>;
+
+    /// Find a confirmed transaction whose note exactly equals `note` **and** whose sender is `sender`,
+    /// or `None`. Authenticates a note on its (unforgeable) signer, so a caller trusts a note only
+    /// when a known account wrote it — not merely because the bytes match.
+    fn find_transaction_by_note_and_sender(
+        &self,
+        note: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>>;
+
+    /// Find a confirmed transaction whose note *starts with* `prefix` (a **byte** prefix) **and** whose
+    /// sender is `sender`, or `None`. The sender-authenticated sibling of
+    /// [`TransactionQueryOps::find_transaction_by_note_prefix`].
+    fn find_transaction_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>>;
+
+    /// Every confirmed transaction whose note *starts with* `prefix` (a **byte** prefix) **and** whose
+    /// sender is `sender`. The sender-authenticated list sibling of
+    /// [`TransactionQueryOps::find_transactions_by_note_prefix`], so a caller aggregates over only a
+    /// known signer's transactions.
+    fn find_transactions_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Vec<ConfirmedTxn>>;
 }
 
 /// Operations for chains that have first-class assets (Algorand Standard Assets, Ethereum

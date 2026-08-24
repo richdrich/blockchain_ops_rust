@@ -1190,6 +1190,7 @@ impl AlgoOps {
     fn find_confirmed_note_matching(
         &self,
         query: &[u8],
+        sender: Option<&str>,
         matches: impl Fn(&[u8]) -> bool,
     ) -> Result<Option<ConfirmedTxn>> {
         let client = self.indexer_client()?;
@@ -1198,7 +1199,7 @@ impl AlgoOps {
         let mut next: Option<String> = None;
         loop {
             let (candidates, next_token) =
-                self.confirmed_notes_page(&client, &note_prefix, next.as_deref())?;
+                self.confirmed_notes_page(&client, &note_prefix, sender, next.as_deref())?;
             // The server-side filter already restricts to notes starting with `query`; `matches` is
             // the caller's narrowing (exact equality, or a defensive `starts_with` re-check).
             if let Some((confirmed_round, note)) =
@@ -1229,6 +1230,7 @@ impl AlgoOps {
     fn collect_confirmed_notes_matching(
         &self,
         query: &[u8],
+        sender: Option<&str>,
         matches: impl Fn(&[u8]) -> bool,
     ) -> Result<Vec<ConfirmedTxn>> {
         let client = self.indexer_client()?;
@@ -1237,7 +1239,7 @@ impl AlgoOps {
         let mut next: Option<String> = None;
         loop {
             let (candidates, next_token) =
-                self.confirmed_notes_page(&client, &note_prefix, next.as_deref())?;
+                self.confirmed_notes_page(&client, &note_prefix, sender, next.as_deref())?;
             found.extend(
                 candidates
                     .into_iter()
@@ -1264,8 +1266,12 @@ impl AlgoOps {
         &self,
         client: &algonaut::Indexer,
         note_prefix: &str,
+        sender: Option<&str>,
         next: Option<&str>,
     ) -> Result<(Vec<(u64, Vec<u8>)>, Option<String>)> {
+        // parse the optional sender filter to an `Address` the indexer call takes by reference; it must
+        // outlive the call below.
+        let address = sender.map(Self::parse_address).transpose()?;
         // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
         // the name it drives any algonaut future, indexer calls included.
         let resp = match self.algod_call(|| {
@@ -1284,11 +1290,13 @@ impl AlgoOps {
                 None,              // after_time
                 None,              // currency_greater_than
                 None,              // currency_less_than
-                None,              // address
-                None,              // address_role
-                None,              // exclude_close_to
-                None,              // rekey_to
-                None,              // app_id
+                address.as_ref(),  // address — restrict to this signer when a sender filter is set
+                // address_role `sender` so an address filter matches the *signer* specifically, not a
+                // receiver (an anchor is a self-payment, so both roles hold; being explicit is precise).
+                sender.map(|_| "sender"),
+                None, // exclude_close_to
+                None, // rekey_to
+                None, // app_id
             )
         }) {
             Ok(v) => v,
@@ -1331,7 +1339,26 @@ impl AlgoOps {
         if note.is_empty() {
             bail!("note must not be empty");
         }
-        self.find_confirmed_note_matching(note, |candidate| candidate == note)
+        self.find_confirmed_note_matching(note, None, |candidate| candidate == note)
+    }
+
+    /// Find a confirmed transaction whose note exactly equals `note` **and** whose sender is `sender`,
+    /// or `Ok(None)`. The sender-authenticated sibling of [`AlgoOps::find_transaction_by_note`]: the
+    /// indexer filters server-side on the note prefix and the sender address (role `sender`), so a
+    /// caller trusts a note only when it was signed by a known account — an unforgeable check a note a
+    /// third party wrote with the same bytes cannot pass. `note` and `sender` must be non-empty.
+    pub fn find_transaction_by_note_and_sender(
+        &self,
+        note: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>> {
+        if note.is_empty() {
+            bail!("note must not be empty");
+        }
+        if sender.is_empty() {
+            bail!("sender must not be empty");
+        }
+        self.find_confirmed_note_matching(note, Some(sender), |candidate| candidate == note)
     }
 
     /// Find a confirmed transaction whose note *starts with* `prefix` — a **byte** prefix, not a bit
@@ -1355,7 +1382,29 @@ impl AlgoOps {
         if prefix.is_empty() {
             bail!("prefix must not be empty");
         }
-        self.find_confirmed_note_matching(prefix, |candidate| candidate.starts_with(prefix))
+        self.find_confirmed_note_matching(prefix, None, |candidate| candidate.starts_with(prefix))
+    }
+
+    /// Find a confirmed transaction whose note *starts with* `prefix` (a **byte** prefix) **and** whose
+    /// sender is `sender`, or `Ok(None)`. The sender-authenticated sibling of
+    /// [`AlgoOps::find_transaction_by_note_prefix`]: the indexer filters server-side on both the note
+    /// prefix and the sender address (role `sender`), so a caller answers "is there any confirmed
+    /// transaction with this note prefix *from this signer*?" — e.g. "is round R anchored by a known
+    /// node?". `prefix` and `sender` must be non-empty.
+    pub fn find_transaction_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Option<ConfirmedTxn>> {
+        if prefix.is_empty() {
+            bail!("prefix must not be empty");
+        }
+        if sender.is_empty() {
+            bail!("sender must not be empty");
+        }
+        self.find_confirmed_note_matching(prefix, Some(sender), |candidate| {
+            candidate.starts_with(prefix)
+        })
     }
 
     /// Every confirmed transaction whose note *starts with* `prefix` — a **byte** prefix, not a bit
@@ -1379,7 +1428,32 @@ impl AlgoOps {
         if prefix.is_empty() {
             bail!("prefix must not be empty");
         }
-        self.collect_confirmed_notes_matching(prefix, |candidate| candidate.starts_with(prefix))
+        self.collect_confirmed_notes_matching(prefix, None, |candidate| {
+            candidate.starts_with(prefix)
+        })
+    }
+
+    /// Every confirmed transaction whose note *starts with* `prefix` (a **byte** prefix) **and** whose
+    /// sender is `sender`, in the indexer's result order. The sender-authenticated list sibling of
+    /// [`AlgoOps::find_transactions_by_note_prefix`]: the indexer filters server-side on both the note
+    /// prefix and the sender address (role `sender`), so a caller aggregates over only a known signer's
+    /// transactions — e.g. sidewinder's cold-start rejoin taking the maximum anchor round across the
+    /// anchors from *one* enrolled node account (it calls this once per account and unions/maxes).
+    /// Returns `Ok(vec![])` when nothing matches. `prefix` and `sender` must be non-empty.
+    pub fn find_transactions_by_note_prefix_and_sender(
+        &self,
+        prefix: &[u8],
+        sender: &str,
+    ) -> Result<Vec<ConfirmedTxn>> {
+        if prefix.is_empty() {
+            bail!("prefix must not be empty");
+        }
+        if sender.is_empty() {
+            bail!("sender must not be empty");
+        }
+        self.collect_confirmed_notes_matching(prefix, Some(sender), |candidate| {
+            candidate.starts_with(prefix)
+        })
     }
 
     pub fn set_asset_clawback_to_app(&self, app_id: u64, asset_id: u64) -> Result<()> {
