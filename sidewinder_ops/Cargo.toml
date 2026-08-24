@@ -1,0 +1,73 @@
+[package]
+name = "sidewinder_ops"
+version = "0.7.0"
+edition = "2024"
+description = "Client for a Sidewinder sidechain node, built on the algo_ops parent-chain handle."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/richdrich/blockchain_ops_rust"
+homepage = "https://github.com/richdrich/blockchain_ops_rust"
+documentation = "https://docs.rs/sidewinder_ops"
+readme = "README.md"
+keywords = ["sidewinder", "sidechain", "algorand", "blockchain", "web3"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
+# Test targets are declared explicitly below (per project guidelines: every test
+# is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
+autotests = false
+
+[dependencies]
+# `version` is required to publish to crates.io: the path is used in-workspace,
+# the version when resolving the published crate. Kept in lockstep with the
+# other workspace crates (all bumped together by `cargo set-version`).
+algo_ops = { path = "../algo_ops", version = "0.7.0" }
+anyhow = "1"
+base64 = "0.22"
+# Async HTTP client; driven synchronously through a per-call Tokio runtime (see
+# `rt_block_on`), mirroring the algo_ops pattern. rustls avoids an OpenSSL build
+# dependency and matches the TLS backend already resolved in the workspace.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# Canonical MessagePack: `rmp_serde` with `.with_struct_map()` matches the Sidewinder node's
+# `sidewinder-core` encoding (keyed maps, most-compact integers), and `serde_bytes` tags the
+# 32-byte / byte-string fields so they serialise as MessagePack `bin`. See `transaction.rs`.
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+# SHA-512/256 is the Sidewinder content-address hash: the transaction identifier is the digest of
+# the canonical body (matching `sidewinder-core`'s `hash`).
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+# Simple test-writer logging.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# The transaction tests verify the produced signature against the sender key (the same check the
+# node makes), decode the packed body to assert its canonical MessagePack layout, and recompute the
+# content-address transaction identifier.
+ed25519-dalek = "2"
+rmpv = "1"
+sha2 = "0.10"
+
+[lints]
+workspace = true
+
+# ── Test targets ─────────────────────────────────────────────────────────────
+# Two buckets, after the algo_ops pattern:
+#   `unit`        — needs no external services; drives the client against an
+#                   in-process mock HTTP node (tests/support/mock_node.rs). Run
+#                   by a bare `cargo test`.
+#   `integration` — drives a real Sidewinder node nest, configured from the
+#                   environment. Marked `test = false` so a bare `cargo test`
+#                   skips it; run explicitly with `cargo test --test integration`.
+#                   It skips cleanly when the nest is unconfigured/unreachable
+#                   (see tests/integration/README.md).
+
+[[test]]
+name = "unit"
+path = "tests/unit.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+# Excluded from the default `cargo test`; opt in with `cargo test --test integration`.
+test = false
