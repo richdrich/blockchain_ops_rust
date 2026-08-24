@@ -21,6 +21,8 @@ mod asset_configured_creator_localnet;
 mod asset_manager_creator_localnet;
 #[path = "ops/dapp_app_integration_localnet.rs"]
 mod dapp_app_integration_localnet;
+#[path = "ops/find_transaction_by_note_and_sender_localnet.rs"]
+mod find_transaction_by_note_and_sender_localnet;
 #[path = "ops/find_transaction_by_note_localnet.rs"]
 mod find_transaction_by_note_localnet;
 #[path = "ops/find_transaction_by_note_prefix_localnet.rs"]
