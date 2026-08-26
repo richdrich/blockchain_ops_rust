@@ -1068,19 +1068,71 @@ impl AlgoOps {
     ///
     /// The seed is decoded from the block model, so no `algonaut` types cross the boundary.
     pub fn block_seed(&self, round: u64) -> Result<Vec<u8>> {
-        let client = self.algod_client()?;
-        let block = match self.algod_call(|| client.block(round)) {
-            Ok(v) => v,
-            Err(e) if AlgoError::is_host_unreachable(&e) => {
-                return Err(AlgoError::unreachable("block", &e.to_string()).into());
+        // Read only the block header's seed. Fetching the fully-typed block (algonaut `client.block`)
+        // decodes its transactions too, and a block that carries a state-proof (`stpf`) transaction —
+        // which algonaut cannot decode — fails the whole fetch even though the seed lives in the header
+        // (issue #66). So GET the block JSON and deserialize just `block.seed`, ignoring `txns` and every
+        // other field, so no transaction is ever decoded.
+        let url = format!(
+            "{}:{}/v2/blocks/{round}?format=json",
+            self.config.client_api_url, self.config.client_api_port
+        );
+        let token = self.config.token.clone().unwrap_or_default();
+        let token_header = self
+            .config
+            .token_key
+            .clone()
+            .unwrap_or_else(|| "X-Algo-API-Token".to_string());
+
+        // reuse the async->sync bridge; distinguish an unreachable host (connect/timeout) so the caller's
+        // skip-when-down behaviour is preserved, from any other failure.
+        let fetched: std::result::Result<String, (bool, String)> =
+            self.rt_block_on(async move {
+                let response = reqwest::Client::new()
+                    .get(url.as_str())
+                    .header(token_header.as_str(), token.as_str())
+                    .send()
+                    .await
+                    .map_err(|e| (e.is_connect() || e.is_timeout(), e.to_string()))?;
+                let status = response.status();
+                let body = response.text().await.map_err(|e| (false, e.to_string()))?;
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    Err((false, format!("HTTP {status}: {body}")))
+                }
+            })?;
+        let body = fetched.map_err(|(unreachable, message)| {
+            if unreachable {
+                AlgoError::unreachable("block", &message).into()
+            } else {
+                anyhow!("failed to fetch block {round}: {message}")
             }
-            Err(e) => return Err(anyhow!("failed to fetch block {round}: {e}")),
-        };
-        let seed = block
-            .block
-            .seed
-            .ok_or_else(|| anyhow!("block {round} did not contain a seed"))?
-            .0;
+        })?;
+        Self::parse_block_header_seed(body.as_bytes(), round)
+    }
+
+    /// Extract the 32-byte block seed from an algod `GET /v2/blocks/{round}?format=json` response body,
+    /// decoding only `block.seed` and ignoring every other field (including `txns`) — so a state-proof
+    /// (`stpf`) or any other transaction algonaut cannot decode is never looked at (issue #66).
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_block_header_seed(body: &[u8], round: u64) -> Result<Vec<u8>> {
+        // a minimal view of the block carrying only the header seed; serde ignores fields not declared
+        // here (there is no `deny_unknown_fields`), so the transaction list is never decoded.
+        #[derive(Deserialize)]
+        struct BlockHeaderResponse {
+            block: BlockHeaderSeed,
+        }
+        #[derive(Deserialize)]
+        struct BlockHeaderSeed {
+            seed: String, // standard base64 of the 32-byte seed
+        }
+
+        let parsed: BlockHeaderResponse = serde_json::from_slice(body)
+            .map_err(|e| anyhow!("failed to parse block {round} header seed: {e}"))?;
+        let seed = general_purpose::STANDARD
+            .decode(parsed.block.seed.as_bytes())
+            .map_err(|e| anyhow!("block {round} seed is not valid base64: {e}"))?;
         if seed.len() != 32 {
             bail!("block {round} seed is {} bytes, expected 32", seed.len());
         }

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "algo_ops"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "algo_ops",
  "algonaut",
@@ -23,6 +23,7 @@ dependencies = [
  "data-encoding",
  "ed25519-dalek",
  "rand_core 0.6.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -406,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "blockchain_ops"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -2200,7 +2201,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidewinder_ops"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "algo_ops",
  "anyhow",

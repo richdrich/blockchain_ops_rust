@@ -1,6 +1,6 @@
 [package]
 name = "algo_ops"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "Algorand implementation of the blockchain_ops traits, over algonaut."
 license = "MIT OR Apache-2.0"
@@ -18,10 +18,14 @@ autotests = false
 # `version` is required to publish to crates.io: the path is used in-workspace,
 # the version when resolving the published crate. Kept in lockstep with
 # blockchain_ops's version (both bumped together by `cargo set-version`).
-blockchain_ops = { path = "../blockchain_ops", version = "0.7.1" }
+blockchain_ops = { path = "../blockchain_ops", version = "0.7.2" }
 algonaut = "0.8.0"
 anyhow = "1"
 base64 = "0.21"
+# a direct HTTP GET for the block-header seed (see `block_seed`), so a state-proof transaction in a
+# block body cannot fail the fetch through algonaut's full-block decode (issue #66). Already in the tree
+# via algonaut, so no new version is pulled in.
+reqwest = "0.13"
 data-encoding = "2"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = "0.6"

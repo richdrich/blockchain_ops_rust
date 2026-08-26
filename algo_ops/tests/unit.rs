@@ -15,6 +15,8 @@ mod address_derivation;
 mod algod_reads;
 #[path = "ops/asset_holding.rs"]
 mod asset_holding;
+#[path = "ops/block_header_seed.rs"]
+mod block_header_seed;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
 #[path = "ops/find_transaction_by_note_and_sender.rs"]
