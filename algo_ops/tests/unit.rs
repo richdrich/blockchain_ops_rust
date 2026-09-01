@@ -35,6 +35,8 @@ mod rate_limit;
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]
 mod retry_logic;
+#[path = "ops/scan_transactions_cached.rs"]
+mod scan_transactions_cached;
 #[path = "ops/set_asset_clawback.rs"]
 mod set_asset_clawback;
 #[path = "ops/sign_bytes.rs"]
