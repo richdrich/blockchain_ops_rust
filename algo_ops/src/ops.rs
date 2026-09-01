@@ -206,8 +206,12 @@ impl TxnScanFilter {
 /// the new hits. The cache is caller-owned and passed in (not held inside [`AlgoOps`]), so one process
 /// holds one cache per use-case (per note-prefix / per app) and tests can inject prefilled caches.
 ///
+/// Derives `Serialize`/`Deserialize` (when `T` does) so a caller can persist the cache across process
+/// restarts and resume the incremental scan from the saved watermark rather than re-bootstrapping the
+/// whole history.
+///
 /// [`last_round`]: TxnScanCache::last_round
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxnScanCache<T> {
     /// The highest round the cache has scanned through — the indexer's `current-round` at the last
     /// refresh. The next incremental refresh fetches from `last_round + 1`. `0` before any scan.
@@ -1838,6 +1842,12 @@ impl AlgoOps {
     /// - `cache_lifetime_secs` of `None` means no freshness window — a `Refresh` always fetches
     ///   incrementally from the watermark.
     ///
+    /// **Locking:** the `cache` mutex is held for the *whole* refresh — every `fetch_page` network
+    /// round-trip *and* the `scan` callback — so concurrent refreshes of the same cache serialize
+    /// (correct for the intended one-poller-per-cache usage) but any other thread sharing the cache
+    /// blocks for the full scan duration. Keep `scan` cheap and do not expect a concurrent reader to
+    /// see the cache mid-refresh.
+    ///
     /// Surfaces `AlgoError::HostUnreachable` when the indexer is down. Ported from
     /// `bingle_core::blockchain::algo_bingle::AlgoBingle::indexer_query_opted_in_accounts_sync`,
     /// simplified for immutable (append-only) transactions.
@@ -1915,6 +1925,16 @@ impl AlgoOps {
             let mut next: Option<String> = None;
             loop {
                 let page = fetch_page(min_round, next.as_deref())?;
+                // Advance the watermark to the greatest `current-round` seen across the pages. This is
+                // safe — no round is skipped by the next refresh's `watermark + 1` floor — because the
+                // Algorand indexer orders `search_for_transactions` oldest-to-newest by round and the
+                // `next` cursor advances monotonically through them: when it is exhausted
+                // (`next_token == None`) every matching transaction through the final page's
+                // `current-round` has been returned. (`current-round` only grows across sequential
+                // requests, so `max` equals the final page's value; taking the max is just robust to
+                // any transient non-monotonicity.) If the indexer instead pinned the result set to the
+                // first request's round while `current-round` kept climbing per page, `max` could skip
+                // the intervening rounds — but that is not this indexer's contract.
                 watermark = watermark.max(page.current_round);
                 for txn in &page.txns {
                     if let Some(entry) = ingest(txn) {
@@ -1944,8 +1964,10 @@ impl AlgoOps {
         }
     }
 
-    /// Current unix time in whole seconds, or `0` if the clock is before the epoch (which would only
-    /// make a cache look maximally stale — a safe degradation to a refresh).
+    /// Current unix time in whole seconds, or `0` if the system clock is before the epoch. A `0` here
+    /// (like any `now` at or behind `last_updated`) makes `scan_cache_is_fresh` treat the cache as
+    /// *fresh* — so a `Refresh` degrades to `CacheOnly` rather than erroring. That only arises if the
+    /// wall clock is set before 1970, so the effect is negligible.
     fn now_unix_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

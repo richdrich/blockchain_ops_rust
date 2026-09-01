@@ -252,6 +252,59 @@ fn paginated_scan_follows_next_token_and_watermarks_the_max_round() {
 }
 
 #[test]
+fn incremental_refresh_paginates_from_the_watermark_across_pages() {
+    // A multi-page *incremental* refresh (the pagination coverage above is on a full scan). Pins down
+    // that every page of an incremental scan carries the same min-round floor and the watermark ends
+    // at the greatest current-round across the pages — the resume point for the following refresh.
+    let cache = Mutex::new(TxnScanCache {
+        last_round: 30,
+        last_updated: 100,
+        entries: vec![txn(7, "A", b"old")],
+    });
+    let stub = StubIndexer::new(vec![
+        page(vec![txn(33, "B", b"n1")], Some("p2"), 40),
+        page(vec![txn(38, "C", b"n2")], Some("p3"), 41),
+        page(vec![txn(41, "D", b"n3")], None, 42),
+    ]);
+
+    // No freshness window → always incremental.
+    AlgoOps::scan_transactions_cached_with(
+        &cache,
+        QueryMode::Refresh,
+        None,
+        1_000,
+        keep_all,
+        |_| Ok(()),
+        |min_round, next| stub.fetch(min_round, next),
+    )
+    .expect("multi-page incremental refresh should succeed");
+
+    // Every page fetches from the same floor (watermark 30 → min_round 31); the token threads through.
+    assert_eq!(
+        stub.calls(),
+        vec![
+            (Some(31), None),
+            (Some(31), Some("p2".to_string())),
+            (Some(31), Some("p3".to_string())),
+        ]
+    );
+    let cache = cache.lock().unwrap();
+    // Append-only: the pre-existing entry first, then the three new hits in page order.
+    assert_eq!(
+        cache.entries,
+        vec![
+            txn(7, "A", b"old"),
+            txn(33, "B", b"n1"),
+            txn(38, "C", b"n2"),
+            txn(41, "D", b"n3"),
+        ]
+    );
+    // The watermark advances to the final page's current-round (the max), so the next refresh resumes
+    // at 43 — covering rounds the later pages surfaced while paging.
+    assert_eq!(cache.last_round, 42);
+}
+
+#[test]
 fn ingest_returning_none_skips_the_transaction() {
     let cache = Mutex::new(TxnScanCache::<ScannedTxn>::new());
     let stub = StubIndexer::new(vec![page(
