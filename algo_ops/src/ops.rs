@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // Ensure the algonaut crate is referenced so this module is explicitly implemented with it.
@@ -143,6 +143,135 @@ pub struct AlgoSuggestedParams {
 // `TransactionQueryOps` trait it is returned by; re-exported here so `algo_ops::ConfirmedTxn` and
 // `crate::ops::ConfirmedTxn` keep resolving.
 pub use blockchain_ops::ConfirmedTxn;
+
+/// A confirmed transaction as seen by the incremental cached scanner
+/// ([`AlgoOps::scan_transactions_cached`]).
+///
+/// Unlike [`ConfirmedTxn`] it also carries the **sender**, so a caller can maintain one shared
+/// scan (cached without a server-side sender filter) and restrict senders client-side — collapsing
+/// a per-account query fan-out to a single scan. Carries only plain types (no `algonaut` types on
+/// the boundary).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScannedTxn {
+    /// The round the transaction was confirmed in (always `> 0` — the scanner drops unconfirmed rows).
+    pub confirmed_round: u64,
+    /// The transaction's signer address, in standard Algorand address form.
+    pub sender: String,
+    /// The transaction note, decoded from its on-chain bytes; `None` if it carried no note.
+    pub note: Option<Vec<u8>>,
+}
+
+/// Optional server-side narrowing for [`AlgoOps::scan_transactions_cached`], so the incremental
+/// fetch stays cheap. Every field is optional; an all-`None` filter scans every transaction.
+///
+/// This narrows the indexer query; the caller's `ingest` closure is still the client-side truth
+/// (e.g. a defensive note-prefix re-check, or a sender restriction applied locally so one cache can
+/// serve many senders).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TxnScanFilter {
+    /// Restrict to transactions whose note *starts with* these raw bytes (the indexer's
+    /// `note-prefix` filter; base64-encoded internally).
+    pub note_prefix: Option<Vec<u8>>,
+    /// Restrict to transactions signed by this address (indexer address role `sender`).
+    pub sender: Option<String>,
+    /// Restrict to transactions targeting this application id.
+    pub app_id: Option<u64>,
+}
+
+impl TxnScanFilter {
+    /// Pre-encode the filter once for a scan: note-prefix to base64 (the indexer's `note-prefix`
+    /// query parameter), sender to a parsed [`algonaut::core::Address`]. Fails if the sender address
+    /// is malformed.
+    fn prepare(&self) -> Result<PreparedScanFilter> {
+        Ok(PreparedScanFilter {
+            note_prefix: self
+                .note_prefix
+                .as_ref()
+                .map(|b| general_purpose::STANDARD.encode(b)),
+            address: self
+                .sender
+                .as_deref()
+                .map(AlgoOps::parse_address)
+                .transpose()?,
+            app_id: self.app_id.map(algonaut::core::AppId),
+        })
+    }
+}
+
+/// A caller-owned incremental scan cache: the last fully-scanned round, the freshness stamp, and the
+/// accumulated caller-defined entries.
+///
+/// Append-only — confirmed transactions are immutable, so (unlike `bingle_core`'s accounts cache)
+/// there is no re-lookup/eviction phase: a refresh fetches only rounds past [`last_round`] and pushes
+/// the new hits. The cache is caller-owned and passed in (not held inside [`AlgoOps`]), so one process
+/// holds one cache per use-case (per note-prefix / per app) and tests can inject prefilled caches.
+///
+/// [`last_round`]: TxnScanCache::last_round
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnScanCache<T> {
+    /// The highest round the cache has scanned through — the indexer's `current-round` at the last
+    /// refresh. The next incremental refresh fetches from `last_round + 1`. `0` before any scan.
+    pub last_round: u64,
+    /// Unix timestamp (seconds) of the last refresh that hit the network; `0` before any scan. Used
+    /// to degrade a fresh [`QueryMode::Refresh`] to [`QueryMode::CacheOnly`].
+    pub last_updated: u64,
+    /// The accumulated caller-defined entries, in scan order (append-only).
+    pub entries: Vec<T>,
+}
+
+impl<T> TxnScanCache<T> {
+    /// An empty cache: no rounds scanned, no freshness stamp, no entries. The first
+    /// [`QueryMode::Refresh`] against it performs a full scan.
+    pub fn new() -> Self {
+        TxnScanCache {
+            last_round: 0,
+            last_updated: 0,
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<T> Default for TxnScanCache<T> {
+    fn default() -> Self {
+        TxnScanCache::new()
+    }
+}
+
+/// How [`AlgoOps::scan_transactions_cached`] should treat the cache on this call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryMode {
+    /// Refresh incrementally: fetch only rounds past the cache watermark, appending the new hits. If
+    /// the cache is within its `cache_lifetime_secs` this degrades to [`QueryMode::CacheOnly`] (zero
+    /// network); an empty cache does a full scan.
+    Refresh,
+    /// Never touch the network: run `scan` over whatever the cache already holds.
+    CacheOnly,
+    /// Discard the cache contents and rebuild it with a full scan from round 0.
+    ForceFull,
+}
+
+/// One page of a cached transaction scan: the page's confirmed transactions, the next-page token
+/// (`None` when the indexer reports no more results), and the indexer's `current-round` (the safe
+/// refresh watermark). Returned by the page fetcher that
+/// [`AlgoOps::scan_transactions_cached`] drives; public so the engine can be unit-tested with a
+/// stubbed fetcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnScanPage {
+    /// The confirmed, in-scope transactions on this page.
+    pub txns: Vec<ScannedTxn>,
+    /// The indexer's pagination token for the following page, or `None` at the end of the results.
+    pub next_token: Option<String>,
+    /// The round at which the indexer computed these results — used as the cache watermark.
+    pub current_round: u64,
+}
+
+/// Server-side filter pre-encoded once per scan: the note-prefix as base64 and the sender parsed to
+/// an [`algonaut::core::Address`] the indexer call takes by reference.
+struct PreparedScanFilter {
+    note_prefix: Option<String>,
+    address: Option<algonaut::core::Address>,
+    app_id: Option<algonaut::core::AppId>,
+}
 
 /// Minimal key provider trait analogous to the Kotlin IKeyProvider interface.
 pub trait KeyProvider: Send + Sync {
@@ -1644,6 +1773,11 @@ impl AlgoOps {
     /// maximum over the results does not miss matches beyond the first page. `prefix` must be
     /// non-empty (an empty prefix matches every note). Surfaces `AlgoError::HostUnreachable` when the
     /// indexer is down.
+    ///
+    /// This re-reads the whole matching history on every call. A caller polling the same prefix
+    /// repeatedly (an append-only, ever-growing result set) should instead hold a
+    /// [`TxnScanCache`] and use [`AlgoOps::scan_transactions_cached`], which fetches only rounds past
+    /// the last scan.
     pub fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>> {
         // An empty prefix would match every note, so reject it (as the single-match method does).
         if prefix.is_empty() {
@@ -1661,6 +1795,11 @@ impl AlgoOps {
     /// transactions — e.g. sidewinder's cold-start rejoin taking the maximum anchor round across the
     /// anchors from *one* enrolled node account (it calls this once per account and unions/maxes).
     /// Returns `Ok(vec![])` when nothing matches. `prefix` and `sender` must be non-empty.
+    ///
+    /// Like [`AlgoOps::find_transactions_by_note_prefix`], this re-reads the whole matching history
+    /// per call and per account; a repeated poll is better served by one shared
+    /// [`AlgoOps::scan_transactions_cached`] over the tag prefix with the sender restriction applied
+    /// client-side in `ingest`, collapsing the per-account fan-out to a single incremental scan.
     pub fn find_transactions_by_note_prefix_and_sender(
         &self,
         prefix: &[u8],
@@ -1674,6 +1813,212 @@ impl AlgoOps {
         }
         self.collect_confirmed_notes_matching(prefix, Some(sender), |candidate| {
             candidate.starts_with(prefix)
+        })
+    }
+
+    /// Incrementally refresh a caller-owned [`TxnScanCache`] and then run `scan` over it — the
+    /// generic, min-round-watermarked counterpart of the whole-history
+    /// [`AlgoOps::find_transactions_by_note_prefix`] family.
+    ///
+    /// Where the `find_transactions_by_note_prefix*` reads re-page the indexer from the beginning of
+    /// the chain on every call, this fetches **only** rounds past the cache watermark (via the
+    /// indexer's `min_round` parameter), so a long-lived, append-only result set (e.g. anchors sharing
+    /// a note-prefix tag) is downloaded once and only extended thereafter. The cache is owned and
+    /// passed in by the caller, so one process holds one cache per use-case.
+    ///
+    /// - `filter` is the optional *server-side* narrowing (note-prefix, sender, app id) that keeps the
+    ///   fetch cheap. `ingest` maps each fetched transaction into a cache entry, or `None` to skip — it
+    ///   is the *client-side* truth (e.g. a defensive note-prefix re-check, or a sender restriction
+    ///   applied locally so one un-sender-filtered cache serves many senders). `scan` is then called
+    ///   with the refreshed cache to iterate/filter/aggregate as the caller likes.
+    /// - [`QueryMode::Refresh`] within `cache_lifetime_secs` performs **no** network call (it degrades
+    ///   to [`QueryMode::CacheOnly`]); a stale `Refresh` fetches only rounds past the watermark; an
+    ///   empty cache does a full scan. [`QueryMode::CacheOnly`] never touches the network.
+    ///   [`QueryMode::ForceFull`] discards the cache and rebuilds it with a full scan.
+    /// - `cache_lifetime_secs` of `None` means no freshness window — a `Refresh` always fetches
+    ///   incrementally from the watermark.
+    ///
+    /// Surfaces `AlgoError::HostUnreachable` when the indexer is down. Ported from
+    /// `bingle_core::blockchain::algo_bingle::AlgoBingle::indexer_query_opted_in_accounts_sync`,
+    /// simplified for immutable (append-only) transactions.
+    pub fn scan_transactions_cached<T>(
+        &self,
+        cache: &Mutex<TxnScanCache<T>>,
+        filter: TxnScanFilter,
+        mode: QueryMode,
+        cache_lifetime_secs: Option<u64>,
+        ingest: impl Fn(&ScannedTxn) -> Option<T>,
+        scan: impl FnMut(&TxnScanCache<T>) -> Result<()>,
+    ) -> Result<()> {
+        let client = self.indexer_client()?;
+        let prepared = filter.prepare()?;
+        let now = Self::now_unix_secs();
+        Self::scan_transactions_cached_with(
+            cache,
+            mode,
+            cache_lifetime_secs,
+            now,
+            ingest,
+            scan,
+            |min_round, next| self.fetch_scan_page(&client, &prepared, min_round, next),
+        )
+    }
+
+    /// The network-free engine behind [`AlgoOps::scan_transactions_cached`]: the caching / freshness /
+    /// watermark logic, with the actual page fetch injected as `fetch_page` and the wall-clock as
+    /// `now`. `fetch_page(min_round, next)` returns one [`TxnScanPage`]; `min_round` is `None` for a
+    /// full scan and `Some(r)` for an incremental scan from round `r`. Exposed under `test-support` so
+    /// the engine is unit-tested with a stubbed, request-counting fetcher (no node required).
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn scan_transactions_cached_with<T>(
+        cache: &Mutex<TxnScanCache<T>>,
+        mode: QueryMode,
+        cache_lifetime_secs: Option<u64>,
+        now: u64,
+        ingest: impl Fn(&ScannedTxn) -> Option<T>,
+        mut scan: impl FnMut(&TxnScanCache<T>) -> Result<()>,
+        mut fetch_page: impl FnMut(Option<u64>, Option<&str>) -> Result<TxnScanPage>,
+    ) -> Result<()> {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| anyhow!("transaction scan cache mutex poisoned"))?;
+
+        // Decide whether to fetch and, if so, from which round. `Some(min_round)` fetches (`None`
+        // inside = full scan, `Some(r)` = incremental from `r`); the outer `None` skips the network.
+        let fetch_from: Option<Option<u64>> = match mode {
+            QueryMode::CacheOnly => None,
+            QueryMode::ForceFull => {
+                // Rebuild from scratch: drop the accumulated entries and the watermark, then full scan.
+                cache.entries.clear();
+                cache.last_round = 0;
+                Some(None)
+            }
+            QueryMode::Refresh => {
+                if cache.last_updated == 0 {
+                    // Never scanned (a full scan that matched nothing still stamps `last_updated`),
+                    // so bootstrap with a full scan.
+                    Some(None)
+                } else if Self::scan_cache_is_fresh(cache.last_updated, now, cache_lifetime_secs) {
+                    // Within the freshness window — degrade to CacheOnly (zero network).
+                    None
+                } else {
+                    // Stale: fetch only rounds strictly past the watermark.
+                    Some(Some(cache.last_round + 1))
+                }
+            }
+        };
+
+        if let Some(min_round) = fetch_from {
+            // Start the watermark from the existing value so it only ever advances (for a full scan
+            // `last_round` was reset to 0 above).
+            let mut watermark = cache.last_round;
+            let mut next: Option<String> = None;
+            loop {
+                let page = fetch_page(min_round, next.as_deref())?;
+                watermark = watermark.max(page.current_round);
+                for txn in &page.txns {
+                    if let Some(entry) = ingest(txn) {
+                        cache.entries.push(entry);
+                    }
+                }
+                match page.next_token {
+                    Some(token) => next = Some(token),
+                    None => break,
+                }
+            }
+            // The indexer only reports rounds it has indexed, so its `current-round` is a safe
+            // watermark: the next incremental refresh resumes at `watermark + 1`.
+            cache.last_round = watermark;
+            cache.last_updated = now;
+        }
+
+        scan(&cache)
+    }
+
+    /// Whether a cache stamped at `last_updated` is still fresh at `now` for `lifetime`. A `None`
+    /// lifetime has no freshness window, so the cache is always treated as stale (always refresh).
+    fn scan_cache_is_fresh(last_updated: u64, now: u64, lifetime: Option<u64>) -> bool {
+        match lifetime {
+            Some(secs) => now.saturating_sub(last_updated) < secs,
+            None => false,
+        }
+    }
+
+    /// Current unix time in whole seconds, or `0` if the clock is before the epoch (which would only
+    /// make a cache look maximally stale — a safe degradation to a refresh).
+    fn now_unix_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Fetch one page of the incremental scan: the same 19-argument `search_for_transactions` call as
+    /// [`AlgoOps::confirmed_notes_page`], but exposing the indexer's `min_round` (for the watermark),
+    /// carrying the transaction `sender`, and *not* dropping note-less rows (the caller's `ingest`
+    /// decides). Surfaces `AlgoError::HostUnreachable` when the indexer is down.
+    fn fetch_scan_page(
+        &self,
+        client: &algonaut::Indexer,
+        filter: &PreparedScanFilter,
+        min_round: Option<u64>,
+        next: Option<&str>,
+    ) -> Result<TxnScanPage> {
+        let resp = match self.algod_call(|| {
+            client.search_for_transactions(
+                None,                          // limit
+                next,                          // next (pagination token)
+                filter.note_prefix.as_deref(), // note_prefix
+                None,                          // tx_type
+                None,                          // sig_type
+                None,                          // transaction_id
+                None,                          // round
+                min_round,                     // min_round — the incremental watermark
+                None,                          // max_round
+                None,                          // asset_id
+                None,                          // before_time
+                None,                          // after_time
+                None,                          // currency_greater_than
+                None,                          // currency_less_than
+                filter.address.as_ref(),       // address — restrict to this signer when set
+                // address_role `sender` so an address filter matches the *signer*, not a receiver.
+                filter.address.as_ref().map(|_| "sender"),
+                None,          // exclude_close_to
+                None,          // rekey_to
+                filter.app_id, // application_id
+            )
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(
+                    AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
+                );
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Keep only confirmed rows (`confirmed_round > 0`); carry the sender and the decoded note
+        // (which may be absent — the caller's `ingest` narrows further).
+        let txns = resp
+            .transactions
+            .into_iter()
+            .filter_map(|txn| {
+                let confirmed_round = txn.confirmed_round.filter(|r| *r > 0)?;
+                Some(ScannedTxn {
+                    confirmed_round,
+                    sender: txn.sender,
+                    note: txn.note.map(|b| b.0),
+                })
+            })
+            .collect();
+        let next_token = match resp.next_token {
+            Some(token) if !token.is_empty() => Some(token),
+            _ => None,
+        };
+        Ok(TxnScanPage {
+            txns,
+            next_token,
+            current_round: resp.current_round,
         })
     }
 

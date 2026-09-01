@@ -12,8 +12,9 @@ mod ops;
 
 pub use error::AlgoError;
 pub use ops::{
-    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, KeyProvider,
-    RateLimitConfig, TransactionGroupBuilder, address_to_byte_key, byte_key_to_address,
+    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, KeyProvider, QueryMode,
+    RateLimitConfig, ScannedTxn, TransactionGroupBuilder, TxnScanCache, TxnScanFilter, TxnScanPage,
+    address_to_byte_key, byte_key_to_address,
 };
 
 // The token bucket is an internal type, re-exported only under `test-support` so its pure
