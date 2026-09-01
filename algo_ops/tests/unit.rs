@@ -19,6 +19,8 @@ mod asset_holding;
 mod block_header_seed;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
+#[path = "ops/error_classification.rs"]
+mod error_classification;
 #[path = "ops/find_transaction_by_note_and_sender.rs"]
 mod find_transaction_by_note_and_sender;
 #[path = "ops/find_transactions_by_note_prefix.rs"]
@@ -27,6 +29,8 @@ mod find_transactions_by_note_prefix;
 mod generate_keypair;
 #[path = "ops/node_errors.rs"]
 mod node_errors;
+#[path = "ops/rate_limit.rs"]
+mod rate_limit;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]

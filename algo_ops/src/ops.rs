@@ -4,12 +4,33 @@ use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 // Ensure the algonaut crate is referenced so this module is explicitly implemented with it.
 // We keep most calls abstracted for now and will progressively replace stubs with concrete calls.
 #[allow(unused_imports)]
 use algonaut as _algonaut;
+
+/// An optional outbound rate limit for algod/indexer calls.
+///
+/// Expresses a token bucket: at most `max_requests` outbound requests are allowed per
+/// `per_millis` window, with the allowance refilling continuously (so up to `max_requests`
+/// may burst before the steady rate applies). It is `Option`al on [`AlgoChainConfig`] and off
+/// by default, so an unset limit leaves the call path unchanged. Plain integer fields (rather
+/// than a `Duration`) keep it trivially serializable and settable from a config file.
+///
+/// This throttles the wrapper's *own* outbound requests to protect a metered endpoint; it does
+/// not model the server's limits. A per-second server rate limit (HTTP 429) is still retried
+/// with backoff by the call path — see [`AlgoOps::algod_call`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    /// Maximum requests granted per window; also the burst capacity.
+    pub max_requests: u32,
+    /// Window length in milliseconds over which `max_requests` tokens refill.
+    pub per_millis: u64,
+}
 
 /// Configuration for Algod and Indexer endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +43,11 @@ pub struct AlgoChainConfig {
     pub token_key: Option<String>,
     pub app_id: Option<u64>,
     pub asset_id: Option<u64>,
+    /// Optional outbound rate limit applied to every algod/indexer request. `None` (the
+    /// default) leaves calls unthrottled. Set it declaratively here, or at construction with
+    /// [`AlgoOps::with_rate_limit`].
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
 }
 
 impl Default for AlgoChainConfig {
@@ -38,6 +64,59 @@ impl Default for AlgoChainConfig {
             token_key: Some("X-Algo-API-Token".to_string()),
             app_id: None,
             asset_id: None,
+            rate_limit: None,
+        }
+    }
+}
+
+/// Token-bucket limiter backing [`RateLimitConfig`]. Held behind an `Arc<Mutex<_>>` on
+/// [`AlgoOps`] so it is shared across clones of a client — cloning must not multiply the
+/// allowance against a metered endpoint.
+///
+/// `pub(crate)` in production; re-exported publicly only under `test-support` so its pure
+/// [`poll`](RateLimiter::poll) logic can be unit-tested with injected `Instant`s.
+#[cfg_attr(feature = "test-support", visibility::make(pub))]
+#[derive(Debug)]
+pub(crate) struct RateLimiter {
+    /// Maximum tokens (burst capacity).
+    capacity: f64,
+    /// Tokens currently available; a request consumes one.
+    tokens: f64,
+    /// Tokens replenished per second.
+    refill_per_sec: f64,
+    /// When `tokens` was last refilled.
+    last_refill: Instant,
+}
+
+impl RateLimiter {
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn new(cfg: &RateLimitConfig, now: Instant) -> Self {
+        // Clamp to sane minimums so a zero in config cannot divide-by-zero or stall forever.
+        let capacity = cfg.max_requests.max(1) as f64;
+        let per_secs = (cfg.per_millis.max(1) as f64) / 1000.0;
+        Self {
+            capacity,
+            tokens: capacity,
+            refill_per_sec: capacity / per_secs,
+            last_refill: now,
+        }
+    }
+
+    /// Refill for the time elapsed since the last poll, then either consume a token and return
+    /// [`Duration::ZERO`] (a request may proceed now) or return how long to wait before the next
+    /// token is available. Passing `now` in keeps this pure and unit-testable.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn poll(&mut self, now: Instant) -> Duration {
+        let elapsed = now
+            .saturating_duration_since(self.last_refill)
+            .as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        self.last_refill = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64((1.0 - self.tokens) / self.refill_per_sec)
         }
     }
 }
@@ -82,6 +161,9 @@ pub struct AlgoOps {
     pub passphrase: Option<String>,
     pub address: Option<String>,
     pub config: AlgoChainConfig,
+    /// The live token bucket derived from `config.rate_limit`, or `None` when unthrottled.
+    /// Behind an `Arc<Mutex<_>>` so `Clone`d handles share one bucket against the endpoint.
+    rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 }
 
 impl AlgoOps {
@@ -163,10 +245,17 @@ impl AlgoOps {
     ) -> Self {
         // Use explicit config if provided; else Default (localnet)
         let config = config.unwrap_or_default();
+        // Build the live limiter from config so a rate limit set declaratively (deserialized
+        // config) is honoured, not only one set via `with_rate_limit`.
+        let rate_limiter = config
+            .rate_limit
+            .as_ref()
+            .map(|rl| Arc::new(Mutex::new(RateLimiter::new(rl, Instant::now()))));
         let mut ops = Self {
             passphrase,
             address,
             config,
+            rate_limiter,
         };
 
         // If no address was provided but we have a passphrase, derive the address immediately.
@@ -179,6 +268,49 @@ impl AlgoOps {
         }
 
         ops
+    }
+
+    /// Apply an outbound rate limit of at most `max` requests per `per` to every algod and
+    /// indexer call this client makes, protecting a metered endpoint from a busy caller.
+    ///
+    /// A token bucket, so up to `max` requests may burst before the rate settles to `max`/`per`.
+    /// Off by default: without this (and without [`AlgoChainConfig::rate_limit`]) the call path is
+    /// unchanged. The limit is also recorded in `self.config.rate_limit` so it round-trips through
+    /// a serialized config, and is shared across [`Clone`]d handles so cloning does not multiply
+    /// the allowance. A builder-style method: `AlgoOps::new_for_algorand(..).with_rate_limit(..)`.
+    pub fn with_rate_limit(mut self, max: u32, per: Duration) -> Self {
+        let cfg = RateLimitConfig {
+            max_requests: max,
+            per_millis: per.as_millis() as u64,
+        };
+        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(&cfg, Instant::now()))));
+        self.config.rate_limit = Some(cfg);
+        self
+    }
+
+    /// Block the current thread until the optional outbound rate limiter grants a token. A no-op
+    /// when no limit is configured, so the default call path is unaffected. Sits on the shared
+    /// async→sync path in [`algod_call`](Self::algod_call), so it governs both algod and indexer
+    /// requests (including retries — each is a real outbound request against the quota).
+    fn throttle(&self) {
+        let Some(limiter) = &self.rate_limiter else {
+            return;
+        };
+        loop {
+            let wait = {
+                // Recover from a poisoned lock rather than panicking: a limiter whose holder
+                // panicked mid-poll still holds valid token state we can keep throttling with.
+                let mut guard = match limiter.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                guard.poll(Instant::now())
+            };
+            if wait.is_zero() {
+                break;
+            }
+            std::thread::sleep(wait);
+        }
     }
 
     /// Helper to generate a unique note (e.g. for avoiding "transaction already in ledger" errors)
@@ -226,6 +358,20 @@ impl AlgoOps {
         false
     }
 
+    // Extract the HTTP status code from an algonaut error, or `None` for a transport-level
+    // failure (timeout, connection refused) that never received an HTTP response. Reads the same
+    // `RequestErrorDetails::Http` shape as `is_retryable`; used to surface a typed `AlgoError`
+    // carrying the status (e.g. a 403 quota stop) instead of an opaque message string.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn http_status(e: &algonaut::Error) -> Option<u16> {
+        if let algonaut::Error::Request(req) = e
+            && let algonaut::error::RequestErrorDetails::Http { status, .. } = &req.details
+        {
+            return Some(*status);
+        }
+        None
+    }
+
     // Helper: run an algonaut async call and flatten the double-Result, with
     // up to 3 retries (with exponential backoff: 1 s, 2 s, 4 s) on transient
     // HTTP errors (408, 425, 429, 502, 503, 504).
@@ -243,6 +389,9 @@ impl AlgoOps {
 
         let mut attempt = 0u32;
         loop {
+            // Throttle every outbound request, retries included: each is a real request against a
+            // metered endpoint (and "failed requests count towards quota"). A no-op when unset.
+            self.throttle();
             let result = self
                 .rt_block_on(make_fut())
                 .map_err(|e| anyhow!("runtime error: {e}"))?;
@@ -264,6 +413,11 @@ impl AlgoOps {
                 Err(e) => {
                     if attempt >= MAX_RETRIES && Self::is_retryable(&e) {
                         return Err(AlgoError::transient("algod call", &e.to_string()).into());
+                    }
+                    // Surface the HTTP status as a typed error so a caller can classify a hard
+                    // rejection (e.g. a 403 quota stop) without string-matching the message.
+                    if let Some(status) = Self::http_status(&e) {
+                        return Err(AlgoError::http("algod call", status, &e.to_string()).into());
                     }
                     return Err(anyhow!("{e}"));
                 }
@@ -1058,7 +1212,9 @@ impl AlgoOps {
             Err(e) if AlgoError::is_host_unreachable(&e) => {
                 return Err(AlgoError::unreachable("node_status", &e.to_string()).into());
             }
-            Err(e) => return Err(anyhow!("failed to get node status: {e}")),
+            // Keep a typed `AlgoError` (e.g. a 403 quota stop) intact so a caller polling the
+            // current round can tell a hard quota rejection from a transient failure.
+            Err(e) => return Err(AlgoError::contextualize("failed to get node status", e)),
         };
         Ok(status.last_round.0)
     }
@@ -1149,7 +1305,12 @@ impl AlgoOps {
             Err(e) if AlgoError::is_host_unreachable(&e) => {
                 return Err(AlgoError::unreachable("suggested_params", &e.to_string()).into());
             }
-            Err(e) => return Err(anyhow!("failed to fetch suggested params: {e}")),
+            Err(e) => {
+                return Err(AlgoError::contextualize(
+                    "failed to fetch suggested params",
+                    e,
+                ));
+            }
         };
         Ok(AlgoSuggestedParams {
             last_round: params.last_round.0,
@@ -1178,7 +1339,7 @@ impl AlgoOps {
             Err(e) if AlgoError::is_host_unreachable(&e) => {
                 return Err(AlgoError::unreachable("send_raw", &e.to_string()).into());
             }
-            Err(e) => return Err(anyhow!("send_raw failed: {e}")),
+            Err(e) => return Err(AlgoError::contextualize("send_raw failed", e)),
         };
         Ok(resp.tx_id)
     }
@@ -1200,6 +1361,14 @@ impl AlgoOps {
             Ok(v) => v,
             Err(e) if AlgoError::is_host_unreachable(&e) => {
                 return Err(AlgoError::unreachable("pending_transaction", &e.to_string()).into());
+            }
+            // A quota/forbidden rejection is a hard stop, not "txn not found": surface it so a
+            // poller backs off rather than looping forever on an apparent absent transaction.
+            Err(e)
+                if e.downcast_ref::<AlgoError>()
+                    .is_some_and(AlgoError::is_quota) =>
+            {
+                return Err(e);
             }
             // The node does not know this txid (404) or a non-fatal read error: report "not
             // found" so callers can poll without special-casing the node's absent-txn response.
