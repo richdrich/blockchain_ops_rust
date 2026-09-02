@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlgoErrorKind {
@@ -9,6 +10,12 @@ pub enum AlgoErrorKind {
     /// example 400 bad request, 401 unauthorized, or 403 daily-quota exceeded). See
     /// [`AlgoError::status`] for the code and [`AlgoError::is_quota`] / [`AlgoError::is_forbidden`].
     HttpError,
+    /// The client's own outbound token-bucket rate limit rejected the request in `Reject` mode —
+    /// no network request was made. Carries the wait until the next token in
+    /// [`AlgoError::retry_after`]. Distinct from a server-side 429 (a retryable
+    /// [`TransientFailure`](AlgoErrorKind::TransientFailure)) and from a 403/quota stop
+    /// ([`HttpError`](AlgoErrorKind::HttpError)); the caller may retry after the wait.
+    RateLimited,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,17 +26,30 @@ pub struct AlgoError {
     /// The HTTP status code, when the failure carried an HTTP response. `None` for
     /// transport-level failures (host unreachable, timeout) that never received one.
     pub status: Option<u16>,
+    /// For a [`RateLimited`](AlgoErrorKind::RateLimited) rejection, the wait until the client's
+    /// token bucket next grants a token, so the caller can schedule a precise back-off. `None` for
+    /// every other kind. Defaulted on deserialization so older serialized errors still load.
+    #[serde(default)]
+    pub retry_after: Option<Duration>,
 }
 
 impl std::fmt::Display for AlgoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.status {
-            Some(status) => write!(
+        match (self.status, self.retry_after) {
+            (Some(status), _) => write!(
                 f,
                 "AlgoError ({:?}, http {}): operation '{}' failed: {}",
                 self.kind, status, self.operation, self.message
             ),
-            None => write!(
+            (None, Some(retry_after)) => write!(
+                f,
+                "AlgoError ({:?}, retry after {} ms): operation '{}' failed: {}",
+                self.kind,
+                retry_after.as_millis(),
+                self.operation,
+                self.message
+            ),
+            (None, None) => write!(
                 f,
                 "AlgoError ({:?}): operation '{}' failed: {}",
                 self.kind, self.operation, self.message
@@ -47,6 +67,7 @@ impl AlgoError {
             operation: operation.to_string(),
             message: message.to_string(),
             status: None,
+            retry_after: None,
         }
     }
 
@@ -56,6 +77,24 @@ impl AlgoError {
             operation: operation.to_string(),
             message: message.to_string(),
             status: None,
+            retry_after: None,
+        }
+    }
+
+    /// Build a [`RateLimited`](AlgoErrorKind::RateLimited) rejection: the client's own outbound
+    /// token bucket had no token in `Reject` mode, so no request was made. `retry_after` is the
+    /// bucket's computed wait until the next token, surfaced on [`retry_after`](Self::retry_after)
+    /// so the caller can back off precisely rather than block the thread.
+    pub fn rate_limited(operation: &str, retry_after: Duration) -> Self {
+        Self {
+            kind: AlgoErrorKind::RateLimited,
+            operation: operation.to_string(),
+            message: format!(
+                "outbound rate limit reached; retry after {} ms",
+                retry_after.as_millis()
+            ),
+            status: None,
+            retry_after: Some(retry_after),
         }
     }
 
@@ -69,6 +108,7 @@ impl AlgoError {
             operation: operation.to_string(),
             message: message.to_string(),
             status: Some(status),
+            retry_after: None,
         }
     }
 
@@ -76,6 +116,23 @@ impl AlgoError {
     /// never received an HTTP response.
     pub fn status(&self) -> Option<u16> {
         self.status
+    }
+
+    /// True when this is the client's own outbound rate-limit rejection ([`Reject` mode][rl]) — no
+    /// request reached the network. Distinct from a server-side 429 (which surfaces as a retryable
+    /// [`TransientFailure`](AlgoErrorKind::TransientFailure)) and from a 403/quota stop, so
+    /// [`is_quota`](Self::is_quota) and [`is_forbidden`](Self::is_forbidden) are both `false` here.
+    ///
+    /// [rl]: crate::RateLimitMode::Reject
+    pub fn is_rate_limited(&self) -> bool {
+        self.kind == AlgoErrorKind::RateLimited
+    }
+
+    /// The wait until the client's token bucket next grants a token, set only on a
+    /// [`RateLimited`](AlgoErrorKind::RateLimited) rejection (`None` otherwise). Lets a caller
+    /// schedule a precise back-off instead of guessing.
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 
     /// True when the node or indexer rejected the request with HTTP 403 Forbidden.

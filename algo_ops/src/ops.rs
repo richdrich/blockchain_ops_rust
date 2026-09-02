@@ -30,6 +30,27 @@ pub struct RateLimitConfig {
     pub max_requests: u32,
     /// Window length in milliseconds over which `max_requests` tokens refill.
     pub per_millis: u64,
+    /// What the limiter does when the bucket is empty. Defaults to [`RateLimitMode::Block`], so a
+    /// config that predates this field (or omits it) keeps today's blocking behaviour.
+    #[serde(default)]
+    pub mode: RateLimitMode,
+}
+
+/// What the outbound rate limiter does when the token bucket is empty.
+///
+/// The default, [`Block`](RateLimitMode::Block), is today's behaviour — no consumer changes. A
+/// latency-sensitive caller (e.g. a consensus loop that must not freeze) selects
+/// [`Reject`](RateLimitMode::Reject) to be handed the wait and back off on its own terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RateLimitMode {
+    /// Sleep the calling thread until the bucket grants a token, then proceed. The request always
+    /// eventually goes out; the caller is throttled by blocking.
+    #[default]
+    Block,
+    /// Do not sleep: when the bucket is empty, fail fast with
+    /// [`AlgoError::rate_limited`](crate::AlgoError::rate_limited) carrying the wait until the next
+    /// token, consuming no token. The caller backs off / serves cached state itself.
+    Reject,
 }
 
 /// Configuration for Algod and Indexer endpoints.
@@ -411,24 +432,47 @@ impl AlgoOps {
     /// unchanged. The limit is also recorded in `self.config.rate_limit` so it round-trips through
     /// a serialized config, and is shared across [`Clone`]d handles so cloning does not multiply
     /// the allowance. A builder-style method: `AlgoOps::new_for_algorand(..).with_rate_limit(..)`.
-    pub fn with_rate_limit(mut self, max: u32, per: Duration) -> Self {
+    ///
+    /// Uses [`RateLimitMode::Block`] (sleep the caller until a token is free). For the non-blocking
+    /// fail-fast behaviour, use [`with_rate_limit_mode`](Self::with_rate_limit_mode).
+    pub fn with_rate_limit(self, max: u32, per: Duration) -> Self {
+        self.with_rate_limit_mode(max, per, RateLimitMode::Block)
+    }
+
+    /// As [`with_rate_limit`](Self::with_rate_limit), but selects the [`RateLimitMode`]: `Block`
+    /// sleeps the caller until a token frees; `Reject` fails fast with
+    /// [`AlgoError::rate_limited`](crate::AlgoError::rate_limited) (carrying the wait) when the
+    /// bucket is empty, so a latency-sensitive caller is never blocked on the rate limit.
+    pub fn with_rate_limit_mode(mut self, max: u32, per: Duration, mode: RateLimitMode) -> Self {
         let cfg = RateLimitConfig {
             max_requests: max,
             per_millis: per.as_millis() as u64,
+            mode,
         };
         self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(&cfg, Instant::now()))));
         self.config.rate_limit = Some(cfg);
         self
     }
 
-    /// Block the current thread until the optional outbound rate limiter grants a token. A no-op
-    /// when no limit is configured, so the default call path is unaffected. Sits on the shared
-    /// async→sync path in [`algod_call`](Self::algod_call), so it governs both algod and indexer
-    /// requests (including retries — each is a real outbound request against the quota).
-    fn throttle(&self) {
+    /// Apply the optional outbound rate limiter before a request. A no-op (returns `Ok`) when no
+    /// limit is configured, so the default call path is unaffected. Sits on the shared async→sync
+    /// path in [`algod_call`](Self::algod_call), so it governs both algod and indexer requests
+    /// (including retries — each is a real outbound request against the quota).
+    ///
+    /// In [`RateLimitMode::Block`] it blocks the calling thread until the bucket grants a token,
+    /// then returns `Ok`. In [`RateLimitMode::Reject`] it polls once: if a token is free it is
+    /// consumed and `Ok` returned; otherwise it returns `Err(AlgoError::rate_limited)` carrying the
+    /// wait — without sleeping and without consuming a token (`poll` only decrements when it grants
+    /// one).
+    fn apply_rate_limit(&self) -> Result<()> {
         let Some(limiter) = &self.rate_limiter else {
-            return;
+            return Ok(());
         };
+        // Reject when the bucket is empty; otherwise (Block, or no configured limit) sleep-loop.
+        let reject = matches!(
+            self.config.rate_limit.as_ref().map(|c| c.mode),
+            Some(RateLimitMode::Reject)
+        );
         loop {
             let wait = {
                 // Recover from a poisoned lock rather than panicking: a limiter whose holder
@@ -440,7 +484,12 @@ impl AlgoOps {
                 guard.poll(Instant::now())
             };
             if wait.is_zero() {
-                break;
+                return Ok(());
+            }
+            if reject {
+                // Fail fast with the precise wait; no token was consumed (poll only decrements when
+                // it returns zero), so the caller can retry once `wait` has elapsed.
+                return Err(AlgoError::rate_limited("algod call", wait).into());
             }
             std::thread::sleep(wait);
         }
@@ -523,8 +572,10 @@ impl AlgoOps {
         let mut attempt = 0u32;
         loop {
             // Throttle every outbound request, retries included: each is a real request against a
-            // metered endpoint (and "failed requests count towards quota"). A no-op when unset.
-            self.throttle();
+            // metered endpoint (and "failed requests count towards quota"). A no-op when unset. In
+            // `Reject` mode an empty bucket short-circuits here with `AlgoError::rate_limited`
+            // rather than sleeping — and, being surfaced by `?`, does not consume a retry attempt.
+            self.apply_rate_limit()?;
             let result = self
                 .rt_block_on(make_fut())
                 .map_err(|e| anyhow!("runtime error: {e}"))?;

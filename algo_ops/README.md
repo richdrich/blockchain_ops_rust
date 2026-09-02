@@ -62,8 +62,43 @@ let ops = AlgoOps::new_for_algorand(None, None, Some(AlgoChainConfig::default())
 ```
 
 Or set it declaratively on the config (it round-trips through serialization) via
-`AlgoChainConfig::rate_limit = Some(RateLimitConfig { max_requests, per_millis })`. The
+`AlgoChainConfig::rate_limit = Some(RateLimitConfig { max_requests, per_millis, mode })`. The
 limiter is shared across clones of a client, so cloning does not multiply the allowance.
+
+### Block vs Reject mode
+
+When the bucket is empty the limiter's `mode` decides what happens:
+
+- `RateLimitMode::Block` (the default) sleeps the calling thread until a token frees, then
+  proceeds. `with_rate_limit(max, per)` uses this — behaviour is unchanged from before.
+- `RateLimitMode::Reject` never sleeps: it fails fast with
+  `AlgoError::rate_limited { retry_after }`, carrying the wait until the next token, and
+  consumes no token. A latency-sensitive caller (e.g. a consensus loop that must not freeze)
+  selects it and backs off — or serves cached state — on its own terms.
+
+```rust
+use std::time::Duration;
+use algo_ops::{AlgoChainConfig, AlgoError, AlgoOps, RateLimitMode};
+
+let ops = AlgoOps::new_for_algorand(None, None, Some(AlgoChainConfig::default()))
+    .with_rate_limit_mode(100, Duration::from_secs(60), RateLimitMode::Reject);
+
+match ops.round() {
+    Ok(round) => { /* use it */ }
+    Err(e) => match e.downcast_ref::<AlgoError>() {
+        Some(ae) if ae.is_rate_limited() => {
+            // Back off for exactly as long as the bucket says, without blocking now.
+            let wait = ae.retry_after().unwrap_or(Duration::from_millis(0));
+            // schedule a retry after `wait`, or serve cached state
+        }
+        _ => { /* other error */ }
+    },
+}
+```
+
+A `Reject` rejection is distinct from a server-side 429 (a retryable transient failure) and
+from a 403/quota stop: `is_rate_limited()` is true while `is_quota()`/`is_forbidden()` are
+false. A rejected call makes no network request and does not consume an internal retry.
 
 ## Distinguishing a quota rejection from a transient failure
 
