@@ -3,13 +3,28 @@
 //! deterministically without sleeping or touching the network. `RateLimiter` is exposed only
 //! under the `test-support` feature (enabled for this crate's own test build).
 
-use algo_ops::{AlgoChainConfig, AlgoOps, RateLimitConfig, RateLimiter};
+use algo_ops::{AlgoChainConfig, AlgoError, AlgoOps, RateLimitConfig, RateLimitMode, RateLimiter};
 use std::time::{Duration, Instant};
+
+// An `AlgoOps` whose endpoint points at a dead local port, so a call fails fast at connect and the
+// only thing worth observing is what the rate limiter did *before* the network. `Reject` mode at the
+// given bucket size.
+fn reject_ops_on_dead_port(max: u32, per: Duration) -> AlgoOps {
+    let mut config = AlgoChainConfig::default();
+    config.client_api_url = "http://127.0.0.1".to_string();
+    config.client_api_port = 19996; // nothing listening → immediate connection-refused
+    AlgoOps::new_for_algorand(None, None, Some(config)).with_rate_limit_mode(
+        max,
+        per,
+        RateLimitMode::Reject,
+    )
+}
 
 fn cfg(max_requests: u32, per_millis: u64) -> RateLimitConfig {
     RateLimitConfig {
         max_requests,
         per_millis,
+        mode: RateLimitMode::Block,
     }
 }
 
@@ -139,6 +154,133 @@ fn throttle_is_applied_on_the_real_call_path() {
     assert!(
         elapsed >= Duration::from_millis(300),
         "three throttled calls should take >= ~300 ms, took {elapsed:?}"
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+fn reject_mode_on_empty_bucket_errors_without_sleeping() {
+    // Capacity 1 over a long 2 s window: the first call spends the only token (then fails at
+    // connect), leaving the bucket empty. In Reject mode the second call must fail *fast* with a
+    // RateLimited error carrying the wait — a Block-mode limiter would instead sleep ~2 s here.
+    let ops = reject_ops_on_dead_port(1, Duration::from_secs(2));
+
+    // Drain the single starting token (the network attempt fails, which is fine — the token is spent).
+    let _ = ops.round();
+
+    let start = Instant::now();
+    let err = ops
+        .round()
+        .expect_err("an empty bucket in Reject mode must return an error, not block");
+    let elapsed = start.elapsed();
+
+    // Fast: no sleeping-until-available (Block would have taken ~2 s).
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "Reject must not sleep; the call took {elapsed:?}"
+    );
+
+    let ae = err
+        .downcast_ref::<AlgoError>()
+        .expect("the rejection should be a typed AlgoError");
+    assert!(
+        ae.is_rate_limited(),
+        "the error must classify as the client's own rate-limit rejection"
+    );
+    // Distinct from a server-side quota/forbidden stop.
+    assert!(!ae.is_quota() && !ae.is_forbidden());
+
+    let retry_after = ae
+        .retry_after()
+        .expect("a RateLimited error must carry the wait until the next token");
+    assert!(retry_after > Duration::ZERO, "retry_after must be positive");
+    assert!(
+        retry_after <= Duration::from_secs(2),
+        "retry_after must be within the bucket refill interval, got {retry_after:?}"
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+fn reject_mode_does_not_consume_a_token_on_rejection() {
+    // A rejected call must not consume a token, so once the bucket refills the next call is let
+    // through the limiter (it then fails at the network, but crucially it is *not* rate-limited).
+    let ops = reject_ops_on_dead_port(1, Duration::from_millis(200));
+
+    // Spend the starting token, then reject on the empty bucket.
+    let _ = ops.round();
+    let rejected = ops.round().expect_err("empty bucket should reject");
+    assert!(
+        rejected
+            .downcast_ref::<AlgoError>()
+            .is_some_and(AlgoError::is_rate_limited),
+        "the second call should be rate-limited while the bucket is empty"
+    );
+
+    // Wait past the refill interval so a token is available again.
+    std::thread::sleep(Duration::from_millis(250));
+
+    let after_refill = ops
+        .round()
+        .expect_err("no node is listening, so the call still fails at the network");
+    // The limiter granted a token (refilled) — the failure is the dead endpoint, not a rejection.
+    assert!(
+        !after_refill
+            .downcast_ref::<AlgoError>()
+            .is_some_and(AlgoError::is_rate_limited),
+        "after the bucket refills the limiter must let the call through, not reject it"
+    );
+}
+
+#[test]
+fn with_rate_limit_defaults_to_block_mode() {
+    // The back-compatible builder keeps today's blocking behaviour.
+    let ops = AlgoOps::new_for_algorand(None, None, Some(AlgoChainConfig::default()))
+        .with_rate_limit(10, Duration::from_secs(1));
+    let mode = ops
+        .config
+        .rate_limit
+        .as_ref()
+        .expect("with_rate_limit should record the limit")
+        .mode;
+    assert_eq!(mode, RateLimitMode::Block);
+}
+
+#[test]
+fn rate_limit_mode_survives_json_round_trip() {
+    let mut config = AlgoChainConfig::default();
+    config.rate_limit = Some(RateLimitConfig {
+        max_requests: 5,
+        per_millis: 1_000,
+        mode: RateLimitMode::Reject,
+    });
+    let json = serde_json::to_string(&config).expect("serialize");
+    let back: AlgoChainConfig = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        back.rate_limit.expect("rate_limit present").mode,
+        RateLimitMode::Reject
+    );
+}
+
+#[test]
+fn rate_limit_config_without_mode_field_defaults_to_block() {
+    // A config serialized before `mode` existed still deserializes, defaulting to Block — so adding
+    // the field is backward compatible and existing consumers keep blocking.
+    let json = r#"{
+        "client_api_url": "http://localhost",
+        "client_api_port": 4001,
+        "indexer_api_url": "http://localhost",
+        "indexer_api_port": 8980,
+        "token": null,
+        "token_key": null,
+        "app_id": null,
+        "asset_id": null,
+        "rate_limit": { "max_requests": 50, "per_millis": 10000 }
+    }"#;
+    let cfg: AlgoChainConfig = serde_json::from_str(json).expect("deserialize legacy rate_limit");
+    assert_eq!(
+        cfg.rate_limit.expect("rate_limit present").mode,
+        RateLimitMode::Block
     );
 }
 
