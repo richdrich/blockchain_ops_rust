@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -53,6 +54,28 @@ pub enum RateLimitMode {
     Reject,
 }
 
+/// A wall-clock daily request cap aligned to a configurable start-of-day, independent of
+/// [`RateLimitConfig`].
+///
+/// The token bucket ([`RateLimitConfig`]) is a *burst clip* — it bounds the short-term rate but not
+/// the total over a day. This bounds the per-day total instead, to stay under a metered provider's
+/// per-IP daily request quota (which resets at a provider-defined start-of-day). The two are
+/// orthogonal and may both be set: the bucket clips bursts, this caps the daily count.
+///
+/// It is `Option`al on [`AlgoChainConfig`] and off by default, so an unset budget leaves the call
+/// path unchanged. Plain integer fields (rather than a `Duration`/time type) keep it trivially
+/// serializable and settable from a config file, mirroring [`RateLimitConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DailyBudgetConfig {
+    /// Max requests granted per daily window.
+    pub max_requests_per_day: u32,
+    /// Start-of-day as a UTC seconds-of-day offset in `[0, 86_400)`: the window is
+    /// `[k*86400 + offset, (k+1)*86400 + offset)`. `0` = 00:00 UTC. A consumer parsing a
+    /// `HH:MM±TZ` day-start resolves it to this UTC offset before passing it in. A value at or
+    /// beyond a full day is reduced modulo 86_400.
+    pub day_start_offset_secs: u32,
+}
+
 /// Configuration for Algod and Indexer endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AlgoChainConfig {
@@ -69,6 +92,12 @@ pub struct AlgoChainConfig {
     /// [`AlgoOps::with_rate_limit`].
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
+    /// Optional wall-clock daily request budget, independent of [`rate_limit`](Self::rate_limit)
+    /// (the bucket clips bursts; this caps the per-day total). `None` (the default) leaves the
+    /// daily backstop off. Set it declaratively here, or at construction with
+    /// [`AlgoOps::with_daily_budget`].
+    #[serde(default)]
+    pub daily_budget: Option<DailyBudgetConfig>,
 }
 
 impl Default for AlgoChainConfig {
@@ -86,6 +115,7 @@ impl Default for AlgoChainConfig {
             app_id: None,
             asset_id: None,
             rate_limit: None,
+            daily_budget: None,
         }
     }
 }
@@ -140,6 +170,119 @@ impl RateLimiter {
             Duration::from_secs_f64((1.0 - self.tokens) / self.refill_per_sec)
         }
     }
+}
+
+/// Lock a `Mutex`, recovering the guard from a poisoned lock rather than panicking: a limiter
+/// whose holder panicked mid-update still holds valid state we can keep enforcing with. Shared by
+/// the token bucket and the daily budget on the per-request path.
+fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Wall-clock daily-budget limiter backing [`DailyBudgetConfig`]. Parallel to [`RateLimiter`], but
+/// counting per *day* (aligned to a configurable start-of-day) rather than refilling a token bucket
+/// — it bounds the total requests in a window, independent of the burst clip.
+///
+/// Held behind an `Arc<Mutex<_>>` on [`AlgoOps`] so it is shared across clones of a client, like
+/// [`RateLimiter`] — cloning must not multiply the daily allowance against a metered endpoint.
+///
+/// Split **check / record** so a request blocked by the *other* limiter (the token bucket) is not
+/// charged here, and vice-versa. `now` is injected (unix seconds) so the pure window logic is
+/// unit-testable without the wall clock.
+///
+/// Two intentional properties: `max == 0` blocks every request (`spent >= max` holds at
+/// `spent == 0`), so it reads as "allow none" — a `None` config, not a zero one, means "off". And
+/// because the lock is released between `check` and `record`, up to N concurrent requests racing the
+/// boundary can admit a few over `max`; that is acceptable for a soft daily backstop set below the
+/// provider's hard quota, not an exact semaphore.
+///
+/// `pub(crate)` in production; re-exported publicly only under `test-support` so its pure logic can
+/// be unit-tested with injected clocks (like [`RateLimiter`]).
+#[cfg_attr(feature = "test-support", visibility::make(pub))]
+#[derive(Debug)]
+pub(crate) struct DailyBudget {
+    /// Max requests granted per daily window.
+    max: u32,
+    /// Start-of-day as a UTC seconds-of-day offset in `[0, 86_400)`.
+    day_start_offset_secs: u32,
+    /// Unix-seconds start of the window `spent` is counted against.
+    window_start_unix: u64,
+    /// Requests committed against the current window.
+    spent: u32,
+}
+
+impl DailyBudget {
+    /// The start (unix seconds) of the daily window containing `now` for a `day_start_offset_secs`
+    /// offset: the greatest `k*86400 + offset <= now`. Uses floor division (`div_euclid`) so a
+    /// `now` before the first post-epoch boundary does not underflow. (`86_400` = seconds per day.)
+    fn window_start_for(now: u64, offset: u64) -> u64 {
+        let k = (now as i64 - offset as i64).div_euclid(86_400);
+        (k * 86_400 + offset as i64).max(0) as u64
+    }
+
+    /// Roll the window forward (or back) if `now` no longer falls in the current day-long window
+    /// `[window_start, window_start + 86_400)`, recomputing the window and zeroing `spent`. A
+    /// backward clock jump also recomputes the window rather than trapping `spent` in a stale one.
+    fn roll(&mut self, now: u64) {
+        let end = self.window_start_unix.saturating_add(86_400);
+        if now < self.window_start_unix || now >= end {
+            self.window_start_unix = Self::window_start_for(now, self.day_start_offset_secs as u64);
+            self.spent = 0;
+        }
+    }
+
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn new(cfg: &DailyBudgetConfig, now_unix_secs: u64, primed_spent: u32) -> Self {
+        // Reduce the offset into `[0, 86_400)` so an out-of-range config cannot place the window
+        // boundary outside a day.
+        let day_start_offset_secs = cfg.day_start_offset_secs % 86_400;
+        Self {
+            max: cfg.max_requests_per_day,
+            day_start_offset_secs,
+            window_start_unix: Self::window_start_for(now_unix_secs, day_start_offset_secs as u64),
+            spent: primed_spent,
+        }
+    }
+
+    /// Peek: roll the window if `now` crossed the next day-start (zeroing `spent`), then report
+    /// whether a request may proceed. Does **not** consume — see [`record`](Self::record). Returns
+    /// `Err(wait)` with the time to the next day-start boundary when the budget is spent.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn check(&mut self, now_unix_secs: u64) -> Result<(), Duration> {
+        self.roll(now_unix_secs);
+        if self.spent >= self.max {
+            let end = self.window_start_unix.saturating_add(86_400);
+            Err(Duration::from_secs(end.saturating_sub(now_unix_secs)))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Commit one request against the current window (call only when the request actually goes
+    /// out). Rolls the window first so a commit after a day boundary lands in the new window.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn record(&mut self, now_unix_secs: u64) {
+        self.roll(now_unix_secs);
+        self.spent = self.spent.saturating_add(1);
+    }
+}
+
+/// A snapshot of the daily-budget window for persistence, returned by
+/// [`AlgoOps::daily_budget_state`]. A consumer persists `{window_start_unix, spent}` and, on boot,
+/// restores `spent` with [`AlgoOps::with_daily_spent`] iff the persisted window still matches the
+/// current one — resuming mid-day rather than from zero (a restart does not refill the provider's
+/// quota).
+#[derive(Debug, Clone, Copy)]
+pub struct DailyBudgetState {
+    /// Unix-seconds start of the current daily window.
+    pub window_start_unix: u64,
+    /// Requests committed against the current window.
+    pub spent: u32,
+    /// The configured per-window maximum.
+    pub max: u32,
 }
 
 /// Neutral snapshot of the algod suggested transaction parameters, returned by
@@ -318,6 +461,14 @@ pub struct AlgoOps {
     /// The live token bucket derived from `config.rate_limit`, or `None` when unthrottled.
     /// Behind an `Arc<Mutex<_>>` so `Clone`d handles share one bucket against the endpoint.
     rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+    /// Total outbound algod/indexer requests issued through this client. Incremented once per real
+    /// outbound request in [`algod_call`](Self::algod_call) (each page, each retry). Behind an
+    /// `Arc<AtomicU64>` so `Clone`d handles share one counter, like `rate_limiter`. Always present
+    /// (independent of any rate limit); seeded by [`with_initial_request_count`](Self::with_initial_request_count).
+    requests_made: Arc<AtomicU64>,
+    /// The live wall-clock daily budget derived from `config.daily_budget`, or `None` when off.
+    /// Behind an `Arc<Mutex<_>>` so `Clone`d handles share one daily count against the endpoint.
+    daily_budget: Option<Arc<Mutex<DailyBudget>>>,
 }
 
 impl AlgoOps {
@@ -405,11 +556,20 @@ impl AlgoOps {
             .rate_limit
             .as_ref()
             .map(|rl| Arc::new(Mutex::new(RateLimiter::new(rl, Instant::now()))));
+        // Build the live daily budget from config so one set declaratively (deserialized config) is
+        // honoured, not only one set via `with_daily_budget`. Starts from a fresh (zero-spent)
+        // window; a consumer restores a running total with `with_daily_spent`.
+        let daily_budget = config
+            .daily_budget
+            .as_ref()
+            .map(|db| Arc::new(Mutex::new(DailyBudget::new(db, Self::now_unix_secs(), 0))));
         let mut ops = Self {
             passphrase,
             address,
             config,
             rate_limiter,
+            requests_made: Arc::new(AtomicU64::new(0)),
+            daily_budget,
         };
 
         // If no address was provided but we have a passphrase, derive the address immediately.
@@ -454,45 +614,137 @@ impl AlgoOps {
         self
     }
 
-    /// Apply the optional outbound rate limiter before a request. A no-op (returns `Ok`) when no
-    /// limit is configured, so the default call path is unaffected. Sits on the shared async→sync
-    /// path in [`algod_call`](Self::algod_call), so it governs both algod and indexer requests
-    /// (including retries — each is a real outbound request against the quota).
-    ///
-    /// In [`RateLimitMode::Block`] it blocks the calling thread until the bucket grants a token,
-    /// then returns `Ok`. In [`RateLimitMode::Reject`] it polls once: if a token is free it is
-    /// consumed and `Ok` returned; otherwise it returns `Err(AlgoError::rate_limited)` carrying the
-    /// wait — without sleeping and without consuming a token (`poll` only decrements when it grants
-    /// one).
-    fn apply_rate_limit(&self) -> Result<()> {
-        let Some(limiter) = &self.rate_limiter else {
-            return Ok(());
+    /// Total outbound algod/indexer requests issued through this client (and its clones — the
+    /// counter is shared, like the rate limiter). Counts **every** request: each page of a paged
+    /// fetch, and each retry. Monotonic; starts from the primed value (default 0, or whatever
+    /// [`with_initial_request_count`](Self::with_initial_request_count) seeded).
+    pub fn requests_made(&self) -> u64 {
+        self.requests_made.load(Ordering::Relaxed)
+    }
+
+    /// Seed the request counter's starting value, for a consumer that persists a running total and
+    /// must restore it into a freshly built client (config change) or across a process restart — a
+    /// counter internal to an instance otherwise resets on both, letting a crash-loop re-spend the
+    /// provider's quota. Chainable at construction.
+    pub fn with_initial_request_count(self, count: u64) -> Self {
+        self.requests_made.store(count, Ordering::Relaxed);
+        self
+    }
+
+    /// Enable the wall-clock daily request cap. Independent of [`with_rate_limit`](Self::with_rate_limit)
+    /// and friends — both may be set (burst clip + daily cap). Rejects with
+    /// [`AlgoError::daily_budget_exceeded`](crate::AlgoError::daily_budget_exceeded) once
+    /// `max_per_day` requests have gone out in the current window, resetting at the next day-start
+    /// (`day_start_offset_secs` UTC seconds-of-day, `0` = 00:00 UTC). Also recorded in
+    /// `self.config.daily_budget` so it round-trips through a serialized config, and shared across
+    /// [`Clone`]d handles so cloning does not multiply the daily allowance.
+    pub fn with_daily_budget(mut self, max_per_day: u32, day_start_offset_secs: u32) -> Self {
+        let cfg = DailyBudgetConfig {
+            max_requests_per_day: max_per_day,
+            day_start_offset_secs,
         };
-        // Reject when the bucket is empty; otherwise (Block, or no configured limit) sleep-loop.
-        let reject = matches!(
-            self.config.rate_limit.as_ref().map(|c| c.mode),
-            Some(RateLimitMode::Reject)
-        );
-        loop {
-            let wait = {
-                // Recover from a poisoned lock rather than panicking: a limiter whose holder
-                // panicked mid-poll still holds valid token state we can keep throttling with.
-                let mut guard = match limiter.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                guard.poll(Instant::now())
-            };
-            if wait.is_zero() {
-                return Ok(());
-            }
-            if reject {
-                // Fail fast with the precise wait; no token was consumed (poll only decrements when
-                // it returns zero), so the caller can retry once `wait` has elapsed.
-                return Err(AlgoError::rate_limited("algod call", wait).into());
-            }
-            std::thread::sleep(wait);
+        self.daily_budget = Some(Arc::new(Mutex::new(DailyBudget::new(
+            &cfg,
+            Self::now_unix_secs(),
+            0,
+        ))));
+        self.config.daily_budget = Some(cfg);
+        self
+    }
+
+    /// Seed the current window's spent count — a consumer persisting `{window_start, spent}` restores
+    /// it on boot so enforcement resumes mid-day rather than from zero (a restart does not refill the
+    /// provider's quota). Pass `0` for a fresh window. A no-op without
+    /// [`with_daily_budget`](Self::with_daily_budget) (or a `daily_budget` in the config). Chainable
+    /// at construction, after `with_daily_budget`.
+    pub fn with_daily_spent(self, spent: u32) -> Self {
+        if let Some(daily) = &self.daily_budget {
+            lock_recover(daily).spent = spent;
         }
+        self
+    }
+
+    /// Snapshot the daily budget window for persistence — `{window_start_unix, spent, max}`. `None`
+    /// when no daily budget is configured. The window is rolled to the current time first, so a read
+    /// after a day boundary reports the fresh (zeroed) window rather than a stale one.
+    pub fn daily_budget_state(&self) -> Option<DailyBudgetState> {
+        let daily = self.daily_budget.as_ref()?;
+        let mut guard = lock_recover(daily);
+        guard.roll(Self::now_unix_secs());
+        Some(DailyBudgetState {
+            window_start_unix: guard.window_start_unix,
+            spent: guard.spent,
+            max: guard.max,
+        })
+    }
+
+    /// Apply the optional outbound limiters before a request, then charge the request against them.
+    /// A no-op (returns `Ok`) when neither a rate limit nor a daily budget is configured, so the
+    /// default call path is unaffected. Sits on the shared async→sync path in
+    /// [`algod_call`](Self::algod_call), so it governs both algod and indexer requests (including
+    /// retries and each page of a paged fetch — every one is a real outbound request against the
+    /// quota).
+    ///
+    /// Enforcement order, so neither limiter is charged for a request the other blocks:
+    /// 1. **Daily budget** — [`DailyBudget::check`] peeks (consuming nothing). If the daily budget
+    ///    is spent, return [`AlgoError::daily_budget_exceeded`] carrying the wait to the next
+    ///    day-start, before the token bucket is touched.
+    /// 2. **Token bucket** — [`RateLimitMode::Block`] blocks until a token frees; `Reject` polls
+    ///    once and, on an empty bucket, returns [`AlgoError::rate_limited`] carrying the wait without
+    ///    sleeping and without consuming a token (so the daily budget below is not charged either).
+    /// 3. **Charge** — only once the request will proceed: [`DailyBudget::record`] commits one
+    ///    request against the current window, and the cumulative counter increments.
+    ///
+    /// The daily window is inherently wall-clock, so `now` comes from [`SystemTime::now`] (via
+    /// [`now_unix_secs`](Self::now_unix_secs)); a backward clock jump just recomputes the window (see
+    /// [`DailyBudget::roll`]). It is read once here so the check and the record agree on the window
+    /// even across a day boundary crossed mid-call.
+    fn apply_rate_limit(&self) -> Result<()> {
+        // Read the wall-clock once, only when a daily budget is configured, so check and record
+        // agree on the window.
+        let now_secs = self.daily_budget.as_ref().map(|_| Self::now_unix_secs());
+
+        // 1. Daily budget: peek before touching the token bucket. On exhaustion, reject consuming
+        //    nothing from either limiter.
+        if let Some(daily) = &self.daily_budget {
+            let now = now_secs.expect("now read when daily_budget is set");
+            let mut guard = lock_recover(daily);
+            if let Err(wait) = guard.check(now) {
+                let offset = guard.day_start_offset_secs;
+                drop(guard);
+                return Err(AlgoError::daily_budget_exceeded(wait, offset).into());
+            }
+        }
+
+        // 2. Token bucket (as before): Block sleeps until a token frees; Reject fails fast on an
+        //    empty bucket. A rejection here returns before the daily budget or counter is charged.
+        if let Some(limiter) = &self.rate_limiter {
+            let reject = matches!(
+                self.config.rate_limit.as_ref().map(|c| c.mode),
+                Some(RateLimitMode::Reject)
+            );
+            loop {
+                let wait = lock_recover(limiter).poll(Instant::now());
+                if wait.is_zero() {
+                    break;
+                }
+                if reject {
+                    // Fail fast with the precise wait; no token was consumed (poll only decrements
+                    // when it returns zero), so the caller can retry once `wait` has elapsed.
+                    return Err(AlgoError::rate_limited("algod call", wait).into());
+                }
+                std::thread::sleep(wait);
+            }
+        }
+
+        // 3. The request will proceed: charge the daily budget and the cumulative counter, exactly
+        //    once per real outbound request.
+        if let Some(daily) = &self.daily_budget {
+            let now = now_secs.expect("now read when daily_budget is set");
+            lock_recover(daily).record(now);
+        }
+        self.requests_made.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Helper to generate a unique note (e.g. for avoiding "transaction already in ledger" errors)
