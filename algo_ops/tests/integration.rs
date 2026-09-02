@@ -29,6 +29,8 @@ mod find_transaction_by_note_and_sender_localnet;
 mod find_transaction_by_note_localnet;
 #[path = "ops/find_transaction_by_note_prefix_localnet.rs"]
 mod find_transaction_by_note_prefix_localnet;
+#[path = "ops/requests_made_localnet.rs"]
+mod requests_made_localnet;
 #[path = "ops/transaction_group_localnet.rs"]
 mod transaction_group_localnet;
 #[path = "ops/txn_submit_localnet.rs"]
