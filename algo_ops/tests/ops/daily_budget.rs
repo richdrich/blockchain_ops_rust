@@ -138,6 +138,28 @@ fn backward_clock_jump_recomputes_the_window() {
     );
 }
 
+#[test]
+fn daily_budget_exceeded_message_reads_in_minutes_at_the_reset_time() {
+    // Human-readable: "resets in N minutes at HHMMZ", where HHMMZ is the day-start offset (the
+    // time-of-day the count resets each day).
+    let midnight = AlgoError::daily_budget_exceeded(Duration::from_secs(230 * 60), 0);
+    assert!(
+        midnight
+            .to_string()
+            .contains("resets in 230 minutes at 0000Z"),
+        "got: {midnight}"
+    );
+
+    // An 08:00 UTC day-start renders as 0800Z; a sub-minute wait rounds up to 1 minute (never 0).
+    let eight = AlgoError::daily_budget_exceeded(Duration::from_secs(30), 8 * 3600);
+    assert!(
+        eight.to_string().contains("resets in 1 minutes at 0800Z"),
+        "got: {eight}"
+    );
+    assert!(eight.is_daily_budget_exceeded());
+    assert_eq!(eight.retry_after(), Some(Duration::from_secs(30)));
+}
+
 // ── Cumulative request counter ───────────────────────────────────────────────
 
 #[test]

@@ -193,6 +193,12 @@ fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// charged here, and vice-versa. `now` is injected (unix seconds) so the pure window logic is
 /// unit-testable without the wall clock.
 ///
+/// Two intentional properties: `max == 0` blocks every request (`spent >= max` holds at
+/// `spent == 0`), so it reads as "allow none" — a `None` config, not a zero one, means "off". And
+/// because the lock is released between `check` and `record`, up to N concurrent requests racing the
+/// boundary can admit a few over `max`; that is acceptable for a soft daily backstop set below the
+/// provider's hard quota, not an exact semaphore.
+///
 /// `pub(crate)` in production; re-exported publicly only under `test-support` so its pure logic can
 /// be unit-tested with injected clocks (like [`RateLimiter`]).
 #[cfg_attr(feature = "test-support", visibility::make(pub))]
@@ -209,22 +215,19 @@ pub(crate) struct DailyBudget {
 }
 
 impl DailyBudget {
-    /// Seconds in a day — the window length.
-    const DAY: u64 = 86_400;
-
     /// The start (unix seconds) of the daily window containing `now` for a `day_start_offset_secs`
     /// offset: the greatest `k*86400 + offset <= now`. Uses floor division (`div_euclid`) so a
-    /// `now` before the first post-epoch boundary does not underflow.
+    /// `now` before the first post-epoch boundary does not underflow. (`86_400` = seconds per day.)
     fn window_start_for(now: u64, offset: u64) -> u64 {
-        let k = (now as i64 - offset as i64).div_euclid(Self::DAY as i64);
-        (k * Self::DAY as i64 + offset as i64).max(0) as u64
+        let k = (now as i64 - offset as i64).div_euclid(86_400);
+        (k * 86_400 + offset as i64).max(0) as u64
     }
 
-    /// Roll the window forward (or back) if `now` no longer falls in `[window_start, window_start +
-    /// DAY)`, recomputing the window and zeroing `spent`. A backward clock jump also recomputes the
-    /// window rather than trapping `spent` in a stale one.
+    /// Roll the window forward (or back) if `now` no longer falls in the current day-long window
+    /// `[window_start, window_start + 86_400)`, recomputing the window and zeroing `spent`. A
+    /// backward clock jump also recomputes the window rather than trapping `spent` in a stale one.
     fn roll(&mut self, now: u64) {
-        let end = self.window_start_unix.saturating_add(Self::DAY);
+        let end = self.window_start_unix.saturating_add(86_400);
         if now < self.window_start_unix || now >= end {
             self.window_start_unix = Self::window_start_for(now, self.day_start_offset_secs as u64);
             self.spent = 0;
@@ -235,7 +238,7 @@ impl DailyBudget {
     pub(crate) fn new(cfg: &DailyBudgetConfig, now_unix_secs: u64, primed_spent: u32) -> Self {
         // Reduce the offset into `[0, 86_400)` so an out-of-range config cannot place the window
         // boundary outside a day.
-        let day_start_offset_secs = cfg.day_start_offset_secs % Self::DAY as u32;
+        let day_start_offset_secs = cfg.day_start_offset_secs % 86_400;
         Self {
             max: cfg.max_requests_per_day,
             day_start_offset_secs,
@@ -251,7 +254,7 @@ impl DailyBudget {
     pub(crate) fn check(&mut self, now_unix_secs: u64) -> Result<(), Duration> {
         self.roll(now_unix_secs);
         if self.spent >= self.max {
-            let end = self.window_start_unix.saturating_add(Self::DAY);
+            let end = self.window_start_unix.saturating_add(86_400);
             Err(Duration::from_secs(end.saturating_sub(now_unix_secs)))
         } else {
             Ok(())
@@ -705,8 +708,11 @@ impl AlgoOps {
         //    nothing from either limiter.
         if let Some(daily) = &self.daily_budget {
             let now = now_secs.expect("now read when daily_budget is set");
-            if let Err(wait) = lock_recover(daily).check(now) {
-                return Err(AlgoError::daily_budget_exceeded(wait).into());
+            let mut guard = lock_recover(daily);
+            if let Err(wait) = guard.check(now) {
+                let offset = guard.day_start_offset_secs;
+                drop(guard);
+                return Err(AlgoError::daily_budget_exceeded(wait, offset).into());
             }
         }
 
