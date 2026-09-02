@@ -12,15 +12,16 @@ mod ops;
 
 pub use error::AlgoError;
 pub use ops::{
-    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, KeyProvider, QueryMode,
-    RateLimitConfig, RateLimitMode, ScannedTxn, TransactionGroupBuilder, TxnScanCache,
-    TxnScanFilter, TxnScanPage, address_to_byte_key, byte_key_to_address,
+    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, DailyBudgetConfig,
+    DailyBudgetState, KeyProvider, QueryMode, RateLimitConfig, RateLimitMode, ScannedTxn,
+    TransactionGroupBuilder, TxnScanCache, TxnScanFilter, TxnScanPage, address_to_byte_key,
+    byte_key_to_address,
 };
 
-// The token bucket is an internal type, re-exported only under `test-support` so its pure
-// `poll` logic can be unit-tested with injected `Instant`s (like `is_retryable`).
+// The token bucket and daily-budget limiters are internal types, re-exported only under
+// `test-support` so their pure logic can be unit-tested with injected clocks (like `is_retryable`).
 #[cfg(feature = "test-support")]
-pub use ops::RateLimiter;
+pub use ops::{DailyBudget, RateLimiter};
 
 use anyhow::Result;
 use blockchain_ops::{AssetOps, BlockChainOps};

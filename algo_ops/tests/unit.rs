@@ -19,6 +19,8 @@ mod asset_holding;
 mod block_header_seed;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
+#[path = "ops/daily_budget.rs"]
+mod daily_budget;
 #[path = "ops/error_classification.rs"]
 mod error_classification;
 #[path = "ops/fetch_transactions_cached.rs"]

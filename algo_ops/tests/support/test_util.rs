@@ -33,6 +33,7 @@ pub fn localnet_config() -> AlgoChainConfig {
         app_id: None,
         asset_id: None,
         rate_limit: None,
+        daily_budget: None,
     }
 }
 

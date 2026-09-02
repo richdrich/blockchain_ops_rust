@@ -20,6 +20,7 @@ fn offline_ops() -> AlgoOps {
         app_id: None,
         asset_id: None,
         rate_limit: None,
+        daily_budget: None,
     };
     let (_id, passphrase) = AlgoOps::generate_keypair();
     AlgoOps::new_for_algorand(Some(passphrase), None, Some(config))
