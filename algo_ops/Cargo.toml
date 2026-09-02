@@ -1,6 +1,6 @@
 [package]
 name = "algo_ops"
-version = "0.7.4"
+version = "0.7.5"
 edition = "2024"
 description = "Algorand implementation of the blockchain_ops traits, over algonaut."
 license = "MIT OR Apache-2.0"

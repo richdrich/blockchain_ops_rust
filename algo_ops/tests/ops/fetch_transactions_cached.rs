@@ -1,9 +1,9 @@
 //! Unit tests for the incremental cached transaction scanner engine
-//! (`AlgoOps::scan_transactions_cached_with`). The engine takes the page fetch as an injected
+//! (`AlgoOps::fetch_transactions_cached_with`). The engine takes the page fetch as an injected
 //! closure and the wall-clock as `now`, so these exercise the caching / freshness / watermark logic
 //! deterministically with a stubbed, request-counting indexer — no node, no time, no network. The
 //! matching behaviour against a real indexer lives in the `integration` bucket
-//! (`scan_transactions_cached_localnet.rs`). The engine is exposed only under the `test-support`
+//! (`fetch_transactions_cached_localnet.rs`). The engine is exposed only under the `test-support`
 //! feature (enabled for this crate's own test build).
 
 use algo_ops::{AlgoOps, QueryMode, ScannedTxn, TxnScanCache, TxnScanPage};
@@ -60,8 +60,8 @@ fn page(txns: Vec<ScannedTxn>, next: Option<&str>, current_round: u64) -> TxnSca
     }
 }
 
-// `ingest` that keeps every transaction as-is; `scan` that does nothing. The default for tests that
-// only care about the fetch/cache mechanics.
+// `ingest` that keeps every transaction as-is — the default for tests that only care about the
+// fetch/cache mechanics.
 fn keep_all(t: &ScannedTxn) -> Option<ScannedTxn> {
     Some(t.clone())
 }
@@ -75,13 +75,12 @@ fn full_scan_bootstrap_populates_empty_cache() {
         8,
     )]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         Some(60),
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("bootstrap scan should succeed");
@@ -106,13 +105,12 @@ fn incremental_refresh_fetches_only_past_the_watermark() {
     let stub = StubIndexer::new(vec![page(vec![txn(12, "B", b"new")], None, 13)]);
 
     // No freshness window → the refresh always fetches incrementally.
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         None,
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("incremental refresh should succeed");
@@ -141,13 +139,12 @@ fn fresh_refresh_degrades_to_cache_only_with_no_network() {
     // No scripted pages: the stub panics if the engine fetches at all.
     let stub = StubIndexer::new(vec![]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         Some(60),
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("a fresh refresh should succeed without fetching");
@@ -170,13 +167,12 @@ fn cache_only_never_fetches_even_when_stale() {
     });
     let stub = StubIndexer::new(vec![]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::CacheOnly,
         Some(1),
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("CacheOnly should succeed without fetching");
@@ -202,13 +198,12 @@ fn force_full_discards_the_cache_and_rebuilds() {
         5,
     )]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::ForceFull,
         Some(60),
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("ForceFull should succeed");
@@ -229,13 +224,12 @@ fn paginated_scan_follows_next_token_and_watermarks_the_max_round() {
         page(vec![txn(9, "B", b"n2")], None, 22),
     ]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         Some(60),
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("paginated scan should succeed");
@@ -268,13 +262,12 @@ fn incremental_refresh_paginates_from_the_watermark_across_pages() {
     ]);
 
     // No freshness window → always incremental.
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         None,
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("multi-page incremental refresh should succeed");
@@ -313,14 +306,13 @@ fn ingest_returning_none_skips_the_transaction() {
         3,
     )]);
 
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         Some(60),
         1_000,
         // Keep only the transaction whose note is exactly `keep`.
         |t| (t.note.as_deref() == Some(b"keep")).then(|| t.clone()),
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("scan with a selective ingest should succeed");
@@ -332,7 +324,7 @@ fn ingest_returning_none_skips_the_transaction() {
 }
 
 #[test]
-fn scan_callback_sees_the_refreshed_cache() {
+fn the_cache_holds_the_refreshed_entries_after_a_fetch() {
     let cache = Mutex::new(TxnScanCache::<ScannedTxn>::new());
     let stub = StubIndexer::new(vec![page(
         vec![txn(5, "A", b"n1"), txn(7, "B", b"n2")],
@@ -340,23 +332,22 @@ fn scan_callback_sees_the_refreshed_cache() {
         8,
     )]);
 
-    // The `scan` callback runs after the refresh; it should observe the just-appended entries.
-    let seen = RefCell::new(0usize);
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         Some(60),
         1_000,
         keep_all,
-        |c| {
-            *seen.borrow_mut() = c.entries.len();
-            Ok(())
-        },
         |min_round, next| stub.fetch(min_round, next),
     )
-    .expect("scan should succeed");
+    .expect("fetch should succeed");
 
-    assert_eq!(*seen.borrow(), 2, "scan must see the refreshed entries");
+    // The caller reads the refreshed set straight from the cache after the fetch returns.
+    assert_eq!(
+        cache.lock().unwrap().entries.len(),
+        2,
+        "the refreshed cache holds the fetched entries"
+    );
 }
 
 #[test]
@@ -370,25 +361,23 @@ fn empty_full_scan_still_stamps_the_watermark_so_next_refresh_is_incremental() {
     ]);
 
     // First: full scan, matches nothing.
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         None,
         1_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("first scan should succeed");
 
     // Second: stale refresh should be incremental from the stamped watermark (15 → min_round 16).
-    AlgoOps::scan_transactions_cached_with(
+    AlgoOps::fetch_transactions_cached_with(
         &cache,
         QueryMode::Refresh,
         None,
         2_000,
         keep_all,
-        |_| Ok(()),
         |min_round, next| stub.fetch(min_round, next),
     )
     .expect("second scan should succeed");
