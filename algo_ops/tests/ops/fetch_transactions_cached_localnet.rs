@@ -1,5 +1,5 @@
 //! Localnet integration test for the incremental cached transaction scanner
-//! (`AlgoOps::scan_transactions_cached`) against a real indexer.
+//! (`AlgoOps::fetch_transactions_cached`) against a real indexer.
 //!
 //! Submits two note-bearing self-payments sharing a fresh tag prefix but landing in different rounds
 //! (built and signed with the SDK, broadcast via `AlgoOps::submit_signed`, as the other localnet
@@ -65,7 +65,7 @@ fn poll_until(
 ) -> usize {
     let tag = tag.to_vec();
     for _ in 0..40 {
-        ops.scan_transactions_cached(
+        ops.fetch_transactions_cached(
             cache,
             TxnScanFilter {
                 note_prefix: Some(tag.clone()),
@@ -75,9 +75,8 @@ fn poll_until(
             None,
             // Defensive client-side re-check of the server-side prefix filter.
             |t| matches!(&t.note, Some(n) if n.starts_with(&tag)).then(|| t.clone()),
-            |_| Ok(()),
         )
-        .expect("scan_transactions_cached should not error");
+        .expect("fetch_transactions_cached should not error");
         let len = cache.lock().unwrap().entries.len();
         if len >= want {
             return len;

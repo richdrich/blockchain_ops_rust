@@ -30,6 +30,27 @@ pub struct RateLimitConfig {
     pub max_requests: u32,
     /// Window length in milliseconds over which `max_requests` tokens refill.
     pub per_millis: u64,
+    /// What the limiter does when the bucket is empty. Defaults to [`RateLimitMode::Block`], so a
+    /// config that predates this field (or omits it) keeps today's blocking behaviour.
+    #[serde(default)]
+    pub mode: RateLimitMode,
+}
+
+/// What the outbound rate limiter does when the token bucket is empty.
+///
+/// The default, [`Block`](RateLimitMode::Block), is today's behaviour — no consumer changes. A
+/// latency-sensitive caller (e.g. a consensus loop that must not freeze) selects
+/// [`Reject`](RateLimitMode::Reject) to be handed the wait and back off on its own terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RateLimitMode {
+    /// Sleep the calling thread until the bucket grants a token, then proceed. The request always
+    /// eventually goes out; the caller is throttled by blocking.
+    #[default]
+    Block,
+    /// Do not sleep: when the bucket is empty, fail fast with
+    /// [`AlgoError::rate_limited`](crate::AlgoError::rate_limited) carrying the wait until the next
+    /// token, consuming no token. The caller backs off / serves cached state itself.
+    Reject,
 }
 
 /// Configuration for Algod and Indexer endpoints.
@@ -145,7 +166,7 @@ pub struct AlgoSuggestedParams {
 pub use blockchain_ops::ConfirmedTxn;
 
 /// A confirmed transaction as seen by the incremental cached scanner
-/// ([`AlgoOps::scan_transactions_cached`]).
+/// ([`AlgoOps::fetch_transactions_cached`]).
 ///
 /// Unlike [`ConfirmedTxn`] it also carries the **sender**, so a caller can maintain one shared
 /// scan (cached without a server-side sender filter) and restrict senders client-side — collapsing
@@ -161,7 +182,7 @@ pub struct ScannedTxn {
     pub note: Option<Vec<u8>>,
 }
 
-/// Optional server-side narrowing for [`AlgoOps::scan_transactions_cached`], so the incremental
+/// Optional server-side narrowing for [`AlgoOps::fetch_transactions_cached`], so the incremental
 /// fetch stays cheap. Every field is optional; an all-`None` filter scans every transaction.
 ///
 /// This narrows the indexer query; the caller's `ingest` closure is still the client-side truth
@@ -241,7 +262,7 @@ impl<T> Default for TxnScanCache<T> {
     }
 }
 
-/// How [`AlgoOps::scan_transactions_cached`] should treat the cache on this call.
+/// How [`AlgoOps::fetch_transactions_cached`] should treat the cache on this call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryMode {
     /// Refresh incrementally: fetch only rounds past the cache watermark, appending the new hits. If
@@ -257,7 +278,7 @@ pub enum QueryMode {
 /// One page of a cached transaction scan: the page's confirmed transactions, the next-page token
 /// (`None` when the indexer reports no more results), and the indexer's `current-round` (the safe
 /// refresh watermark). Returned by the page fetcher that
-/// [`AlgoOps::scan_transactions_cached`] drives; public so the engine can be unit-tested with a
+/// [`AlgoOps::fetch_transactions_cached`] drives; public so the engine can be unit-tested with a
 /// stubbed fetcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxnScanPage {
@@ -411,24 +432,47 @@ impl AlgoOps {
     /// unchanged. The limit is also recorded in `self.config.rate_limit` so it round-trips through
     /// a serialized config, and is shared across [`Clone`]d handles so cloning does not multiply
     /// the allowance. A builder-style method: `AlgoOps::new_for_algorand(..).with_rate_limit(..)`.
-    pub fn with_rate_limit(mut self, max: u32, per: Duration) -> Self {
+    ///
+    /// Uses [`RateLimitMode::Block`] (sleep the caller until a token is free). For the non-blocking
+    /// fail-fast behaviour, use [`with_rate_limit_mode`](Self::with_rate_limit_mode).
+    pub fn with_rate_limit(self, max: u32, per: Duration) -> Self {
+        self.with_rate_limit_mode(max, per, RateLimitMode::Block)
+    }
+
+    /// As [`with_rate_limit`](Self::with_rate_limit), but selects the [`RateLimitMode`]: `Block`
+    /// sleeps the caller until a token frees; `Reject` fails fast with
+    /// [`AlgoError::rate_limited`](crate::AlgoError::rate_limited) (carrying the wait) when the
+    /// bucket is empty, so a latency-sensitive caller is never blocked on the rate limit.
+    pub fn with_rate_limit_mode(mut self, max: u32, per: Duration, mode: RateLimitMode) -> Self {
         let cfg = RateLimitConfig {
             max_requests: max,
             per_millis: per.as_millis() as u64,
+            mode,
         };
         self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(&cfg, Instant::now()))));
         self.config.rate_limit = Some(cfg);
         self
     }
 
-    /// Block the current thread until the optional outbound rate limiter grants a token. A no-op
-    /// when no limit is configured, so the default call path is unaffected. Sits on the shared
-    /// async→sync path in [`algod_call`](Self::algod_call), so it governs both algod and indexer
-    /// requests (including retries — each is a real outbound request against the quota).
-    fn throttle(&self) {
+    /// Apply the optional outbound rate limiter before a request. A no-op (returns `Ok`) when no
+    /// limit is configured, so the default call path is unaffected. Sits on the shared async→sync
+    /// path in [`algod_call`](Self::algod_call), so it governs both algod and indexer requests
+    /// (including retries — each is a real outbound request against the quota).
+    ///
+    /// In [`RateLimitMode::Block`] it blocks the calling thread until the bucket grants a token,
+    /// then returns `Ok`. In [`RateLimitMode::Reject`] it polls once: if a token is free it is
+    /// consumed and `Ok` returned; otherwise it returns `Err(AlgoError::rate_limited)` carrying the
+    /// wait — without sleeping and without consuming a token (`poll` only decrements when it grants
+    /// one).
+    fn apply_rate_limit(&self) -> Result<()> {
         let Some(limiter) = &self.rate_limiter else {
-            return;
+            return Ok(());
         };
+        // Reject when the bucket is empty; otherwise (Block, or no configured limit) sleep-loop.
+        let reject = matches!(
+            self.config.rate_limit.as_ref().map(|c| c.mode),
+            Some(RateLimitMode::Reject)
+        );
         loop {
             let wait = {
                 // Recover from a poisoned lock rather than panicking: a limiter whose holder
@@ -440,7 +484,12 @@ impl AlgoOps {
                 guard.poll(Instant::now())
             };
             if wait.is_zero() {
-                break;
+                return Ok(());
+            }
+            if reject {
+                // Fail fast with the precise wait; no token was consumed (poll only decrements when
+                // it returns zero), so the caller can retry once `wait` has elapsed.
+                return Err(AlgoError::rate_limited("algod call", wait).into());
             }
             std::thread::sleep(wait);
         }
@@ -523,8 +572,10 @@ impl AlgoOps {
         let mut attempt = 0u32;
         loop {
             // Throttle every outbound request, retries included: each is a real request against a
-            // metered endpoint (and "failed requests count towards quota"). A no-op when unset.
-            self.throttle();
+            // metered endpoint (and "failed requests count towards quota"). A no-op when unset. In
+            // `Reject` mode an empty bucket short-circuits here with `AlgoError::rate_limited`
+            // rather than sleeping — and, being surfaced by `?`, does not consume a retry attempt.
+            self.apply_rate_limit()?;
             let result = self
                 .rt_block_on(make_fut())
                 .map_err(|e| anyhow!("runtime error: {e}"))?;
@@ -1780,7 +1831,7 @@ impl AlgoOps {
     ///
     /// This re-reads the whole matching history on every call. A caller polling the same prefix
     /// repeatedly (an append-only, ever-growing result set) should instead hold a
-    /// [`TxnScanCache`] and use [`AlgoOps::scan_transactions_cached`], which fetches only rounds past
+    /// [`TxnScanCache`] and use [`AlgoOps::fetch_transactions_cached`], which fetches only rounds past
     /// the last scan.
     pub fn find_transactions_by_note_prefix(&self, prefix: &[u8]) -> Result<Vec<ConfirmedTxn>> {
         // An empty prefix would match every note, so reject it (as the single-match method does).
@@ -1802,7 +1853,7 @@ impl AlgoOps {
     ///
     /// Like [`AlgoOps::find_transactions_by_note_prefix`], this re-reads the whole matching history
     /// per call and per account; a repeated poll is better served by one shared
-    /// [`AlgoOps::scan_transactions_cached`] over the tag prefix with the sender restriction applied
+    /// [`AlgoOps::fetch_transactions_cached`] over the tag prefix with the sender restriction applied
     /// client-side in `ingest`, collapsing the per-account fan-out to a single incremental scan.
     pub fn find_transactions_by_note_prefix_and_sender(
         &self,
@@ -1820,21 +1871,21 @@ impl AlgoOps {
         })
     }
 
-    /// Incrementally refresh a caller-owned [`TxnScanCache`] and then run `scan` over it — the
-    /// generic, min-round-watermarked counterpart of the whole-history
+    /// Incrementally refresh a caller-owned [`TxnScanCache`], then read the refreshed entries from it —
+    /// the generic, min-round-watermarked counterpart of the whole-history
     /// [`AlgoOps::find_transactions_by_note_prefix`] family.
     ///
     /// Where the `find_transactions_by_note_prefix*` reads re-page the indexer from the beginning of
     /// the chain on every call, this fetches **only** rounds past the cache watermark (via the
     /// indexer's `min_round` parameter), so a long-lived, append-only result set (e.g. anchors sharing
     /// a note-prefix tag) is downloaded once and only extended thereafter. The cache is owned and
-    /// passed in by the caller, so one process holds one cache per use-case.
+    /// passed in by the caller, so one process holds one cache per use-case; **read `cache.entries`
+    /// after this returns** to use the refreshed set.
     ///
     /// - `filter` is the optional *server-side* narrowing (note-prefix, sender, app id) that keeps the
     ///   fetch cheap. `ingest` maps each fetched transaction into a cache entry, or `None` to skip — it
     ///   is the *client-side* truth (e.g. a defensive note-prefix re-check, or a sender restriction
-    ///   applied locally so one un-sender-filtered cache serves many senders). `scan` is then called
-    ///   with the refreshed cache to iterate/filter/aggregate as the caller likes.
+    ///   applied locally so one un-sender-filtered cache serves many senders).
     /// - [`QueryMode::Refresh`] within `cache_lifetime_secs` performs **no** network call (it degrades
     ///   to [`QueryMode::CacheOnly`]); a stale `Refresh` fetches only rounds past the watermark; an
     ///   empty cache does a full scan. [`QueryMode::CacheOnly`] never touches the network.
@@ -1842,51 +1893,48 @@ impl AlgoOps {
     /// - `cache_lifetime_secs` of `None` means no freshness window — a `Refresh` always fetches
     ///   incrementally from the watermark.
     ///
-    /// **Locking:** the `cache` mutex is held for the *whole* refresh — every `fetch_page` network
-    /// round-trip *and* the `scan` callback — so concurrent refreshes of the same cache serialize
-    /// (correct for the intended one-poller-per-cache usage) but any other thread sharing the cache
-    /// blocks for the full scan duration. Keep `scan` cheap and do not expect a concurrent reader to
-    /// see the cache mid-refresh.
+    /// **Locking:** the `cache` mutex is held for the whole refresh — every `fetch_page` network
+    /// round-trip — and is released before this returns, so concurrent refreshes of the same cache
+    /// serialize (correct for the intended one-poller-per-cache usage). Read the entries with a fresh
+    /// lock afterwards; because the refresh and that read take the lock separately, a second writer could
+    /// mutate in between — so one poller per cache is assumed.
     ///
     /// Surfaces `AlgoError::HostUnreachable` when the indexer is down. Ported from
     /// `bingle_core::blockchain::algo_bingle::AlgoBingle::indexer_query_opted_in_accounts_sync`,
     /// simplified for immutable (append-only) transactions.
-    pub fn scan_transactions_cached<T>(
+    pub fn fetch_transactions_cached<T>(
         &self,
         cache: &Mutex<TxnScanCache<T>>,
         filter: TxnScanFilter,
         mode: QueryMode,
         cache_lifetime_secs: Option<u64>,
         ingest: impl Fn(&ScannedTxn) -> Option<T>,
-        scan: impl FnMut(&TxnScanCache<T>) -> Result<()>,
     ) -> Result<()> {
         let client = self.indexer_client()?;
         let prepared = filter.prepare()?;
         let now = Self::now_unix_secs();
-        Self::scan_transactions_cached_with(
+        Self::fetch_transactions_cached_with(
             cache,
             mode,
             cache_lifetime_secs,
             now,
             ingest,
-            scan,
             |min_round, next| self.fetch_scan_page(&client, &prepared, min_round, next),
         )
     }
 
-    /// The network-free engine behind [`AlgoOps::scan_transactions_cached`]: the caching / freshness /
+    /// The network-free engine behind [`AlgoOps::fetch_transactions_cached`]: the caching / freshness /
     /// watermark logic, with the actual page fetch injected as `fetch_page` and the wall-clock as
     /// `now`. `fetch_page(min_round, next)` returns one [`TxnScanPage`]; `min_round` is `None` for a
     /// full scan and `Some(r)` for an incremental scan from round `r`. Exposed under `test-support` so
     /// the engine is unit-tested with a stubbed, request-counting fetcher (no node required).
     #[cfg_attr(feature = "test-support", visibility::make(pub))]
-    pub(crate) fn scan_transactions_cached_with<T>(
+    pub(crate) fn fetch_transactions_cached_with<T>(
         cache: &Mutex<TxnScanCache<T>>,
         mode: QueryMode,
         cache_lifetime_secs: Option<u64>,
         now: u64,
         ingest: impl Fn(&ScannedTxn) -> Option<T>,
-        mut scan: impl FnMut(&TxnScanCache<T>) -> Result<()>,
         mut fetch_page: impl FnMut(Option<u64>, Option<&str>) -> Result<TxnScanPage>,
     ) -> Result<()> {
         let mut cache = cache
@@ -1952,7 +2000,7 @@ impl AlgoOps {
             cache.last_updated = now;
         }
 
-        scan(&cache)
+        Ok(())
     }
 
     /// Whether a cache stamped at `last_updated` is still fresh at `now` for `lifetime`. A `None`
