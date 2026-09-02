@@ -44,13 +44,12 @@ pub fn requests_made_counts_each_real_outbound_request_including_scan_pages() {
     // advances the counter by its page count (>= 1) — never a flat 1 independent of the page count.
     let cache = Mutex::new(TxnScanCache::<ScannedTxn>::new());
     let before_scan = ops.requests_made();
-    ops.scan_transactions_cached(
+    ops.fetch_transactions_cached(
         &cache,
         TxnScanFilter::default(),
         QueryMode::ForceFull,
         None,
         |t| Some(t.clone()),
-        |_| Ok(()),
     )
     .expect("a force-full scan should succeed against localnet");
     let pages = ops.requests_made() - before_scan;
