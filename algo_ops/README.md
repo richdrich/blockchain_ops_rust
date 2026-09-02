@@ -100,6 +100,69 @@ A `Reject` rejection is distinct from a server-side 429 (a retryable transient f
 from a 403/quota stop: `is_rate_limited()` is true while `is_quota()`/`is_forbidden()` are
 false. A rejected call makes no network request and does not consume an internal retry.
 
+## Daily request backstop
+
+The rate limit above is a burst clip: it bounds the short-term rate, not the total over a
+day. To stay under a metered provider's per-IP daily request quota (which halts a node until
+the provider's start-of-day reset), enable the wall-clock daily budget — independent of the
+token bucket, so both may be set: the bucket clips bursts, the budget caps the daily total.
+It counts at the same shared per-request hook, so each page of a paged fetch and each retry
+counts as one request.
+
+```rust
+use std::time::Duration;
+use algo_ops::{AlgoChainConfig, AlgoError, AlgoOps, RateLimitMode};
+
+let ops = AlgoOps::new_for_algorand(None, None, Some(AlgoChainConfig::default()))
+    .with_rate_limit_mode(240, Duration::from_secs(60), RateLimitMode::Reject) // burst clip
+    .with_daily_budget(50_000, 0);                                             // 50k/day at 00:00 UTC
+
+match ops.round() {
+    Ok(round) => { /* use it */ }
+    Err(e) => match e.downcast_ref::<AlgoError>() {
+        Some(ae) if ae.is_daily_budget_exceeded() => {
+            // The self-imposed daily budget is spent — a quota-class event. Log/alarm once and
+            // self-heal at the boundary; `retry_after()` is the time to the next day-start reset.
+            let _until_reset = ae.retry_after();
+        }
+        Some(ae) if ae.is_rate_limited() => { /* transient burst clip — back off briefly */ }
+        _ => { /* other error */ }
+    },
+}
+```
+
+The start-of-day is a UTC seconds-of-day offset in `[0, 86_400)` (`0` = 00:00 UTC); a consumer
+parsing an `HH:MM±TZ` day-start resolves it to that offset first. Set it declaratively on the
+config via `AlgoChainConfig::daily_budget = Some(DailyBudgetConfig { max_requests_per_day,
+day_start_offset_secs })` (it round-trips through serialization). The daily count is checked
+*before* the token bucket, so neither limiter is charged for a request the other blocks.
+
+`is_daily_budget_exceeded()` is distinct from `is_rate_limited()` (a transient burst clip) and
+from `is_quota()`/`is_forbidden()` (a server-side 403): all three are false here.
+
+### Persisting the count across restarts
+
+A restart does not refill the provider's quota, so the running total must survive one — a
+counter internal to a client instance otherwise resets on both a config rebuild and a process
+restart, letting a crash-loop re-spend the budget. Both the cumulative request counter and the
+daily-window count are primeable at construction and readable for persistence:
+
+```rust
+// Boot: restore the persisted totals into a freshly built client.
+let ops = AlgoOps::new_for_algorand(None, None, Some(config))
+    .with_daily_budget(50_000, day_start_offset_secs)
+    .with_daily_spent(persisted_spent_for_this_window) // resume mid-day rather than from zero
+    .with_initial_request_count(persisted_total);      // resume the lifetime counter
+
+// Periodically snapshot to disk.
+let total = ops.requests_made();                        // monotonic lifetime total
+let state = ops.daily_budget_state();                   // Some({ window_start_unix, spent, max })
+```
+
+`requests_made()` counts every outbound request (each page, each retry) and is always on,
+independent of any rate limit. Both the counter and the daily budget are shared across clones,
+so cloning a client neither multiplies the allowance nor splits the count.
+
 ## Distinguishing a quota rejection from a transient failure
 
 A failed call surfaces the underlying HTTP status as a typed `AlgoError`, so a caller can

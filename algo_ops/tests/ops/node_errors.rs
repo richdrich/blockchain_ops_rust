@@ -16,6 +16,7 @@ pub fn test_node_unreachable() {
         app_id: None,
         asset_id: None,
         rate_limit: None,
+        daily_budget: None,
     };
 
     let (id, _passphrase) = AlgoOps::generate_keypair();

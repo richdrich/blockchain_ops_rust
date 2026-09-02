@@ -16,6 +16,12 @@ pub enum AlgoErrorKind {
     /// [`TransientFailure`](AlgoErrorKind::TransientFailure)) and from a 403/quota stop
     /// ([`HttpError`](AlgoErrorKind::HttpError)); the caller may retry after the wait.
     RateLimited,
+    /// The client's own self-imposed wall-clock daily request budget is spent — no network request
+    /// was made. Carries the wait until the next day-start boundary (when the count resets) in
+    /// [`AlgoError::retry_after`]. Distinct from [`RateLimited`](AlgoErrorKind::RateLimited) (a
+    /// transient per-window burst clip): this is a quota-class event a caller logs/alarms once and
+    /// self-heals from at the boundary, not a request-by-request back-off.
+    DailyBudgetExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +102,36 @@ impl AlgoError {
             status: None,
             retry_after: Some(retry_after),
         }
+    }
+
+    /// Build a [`DailyBudgetExceeded`](AlgoErrorKind::DailyBudgetExceeded) rejection: the client's
+    /// own self-imposed daily request budget is spent, so no request was made. `retry_after` is the
+    /// time to the next day-start boundary (when the count resets), surfaced on
+    /// [`retry_after`](Self::retry_after) so the caller can self-heal precisely at the boundary.
+    ///
+    /// Distinct from [`rate_limited`](Self::rate_limited) (a transient per-window burst clip) so a
+    /// consumer can treat it as a quota-class event — log/alarm once rather than back off per
+    /// request. See [`is_daily_budget_exceeded`](Self::is_daily_budget_exceeded).
+    pub fn daily_budget_exceeded(retry_after: Duration) -> Self {
+        Self {
+            kind: AlgoErrorKind::DailyBudgetExceeded,
+            operation: "algod call".to_string(),
+            message: format!(
+                "daily request budget exhausted; resets in {} s",
+                retry_after.as_secs()
+            ),
+            status: None,
+            retry_after: Some(retry_after),
+        }
+    }
+
+    /// True when this is the client's own daily-budget rejection — the self-imposed wall-clock
+    /// daily request cap is spent and no request reached the network. Distinct from
+    /// [`is_rate_limited`](Self::is_rate_limited) (a transient burst clip) and from a server-side
+    /// 403/quota stop ([`is_quota`](Self::is_quota)); [`retry_after`](Self::retry_after) carries the
+    /// wait to the next day-start boundary.
+    pub fn is_daily_budget_exceeded(&self) -> bool {
+        self.kind == AlgoErrorKind::DailyBudgetExceeded
     }
 
     /// Build a non-retryable HTTP error carrying its `status` code. Used by the call path to
