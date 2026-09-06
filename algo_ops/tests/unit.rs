@@ -45,6 +45,8 @@ mod set_asset_clawback;
 mod sign_bytes;
 #[path = "ops/sign_notify_envelope.rs"]
 mod sign_notify_envelope;
+#[path = "ops/timeout.rs"]
+mod timeout;
 #[path = "ops/transaction_group.rs"]
 mod transaction_group;
 #[path = "ops/txn_submit.rs"]

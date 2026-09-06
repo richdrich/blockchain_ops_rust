@@ -469,6 +469,12 @@ pub struct AlgoOps {
     /// The live wall-clock daily budget derived from `config.daily_budget`, or `None` when off.
     /// Behind an `Arc<Mutex<_>>` so `Clone`d handles share one daily count against the endpoint.
     daily_budget: Option<Arc<Mutex<DailyBudget>>>,
+    /// A ceiling on how long any single algod/indexer call may take before it is cancelled and
+    /// surfaced as a timeout error, set by [`with_timeout`](Self::with_timeout). `None` (the default)
+    /// leaves calls unbounded — today's behaviour. Applied at the async→sync bridge
+    /// ([`rt_block_on`](Self::rt_block_on)) so it bounds **every** call (both the `algonaut` client and
+    /// the raw-`reqwest` reads), and cancels a stalled request rather than blocking the caller forever.
+    timeout: Option<Duration>,
 }
 
 impl AlgoOps {
@@ -570,6 +576,7 @@ impl AlgoOps {
             rate_limiter,
             requests_made: Arc::new(AtomicU64::new(0)),
             daily_budget,
+            timeout: None,
         };
 
         // If no address was provided but we have a passphrase, derive the address immediately.
@@ -611,6 +618,19 @@ impl AlgoOps {
         };
         self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(&cfg, Instant::now()))));
         self.config.rate_limit = Some(cfg);
+        self
+    }
+
+    /// Bound every algod/indexer call to at most `timeout`: a call that has not completed by then is
+    /// cancelled (its in-flight request future is dropped, aborting the socket) and surfaces a timeout
+    /// error, rather than blocking the caller indefinitely on a stalled connection.
+    ///
+    /// Off by default — without this a call waits forever for a hung endpoint, which on a caller's
+    /// single-threaded event loop freezes the whole loop. The bound is applied at the async→sync bridge,
+    /// so it covers both the `algonaut` client and the raw-`reqwest` reads uniformly. Shared across
+    /// [`Clone`]d handles. A builder-style method: `AlgoOps::new_for_algorand(..).with_timeout(..)`.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -861,30 +881,39 @@ impl AlgoOps {
         }
     }
 
-    // Helper: run an async future on a fresh current-thread Tokio runtime.
+    // Helper: run an async future on a fresh current-thread Tokio runtime, bounded by `self.timeout`.
     fn rt_block_on<T: Send>(&self, fut: impl Future<Output = T> + Send) -> Result<T> {
-        // If we are already in a tokio runtime, we must avoid nested block_on and
-        // the "cannot drop runtime" panic during unwinding/drop.
+        let timeout = self.timeout;
+        // Build a fresh current-thread runtime and drive `fut` on it. When a timeout is set, race the
+        // future against a timer: on elapse the future is dropped, cancelling the in-flight request
+        // (aborting its socket) and surfacing a timeout error, so a stalled endpoint cannot block the
+        // caller forever. Packaged as one `FnOnce` so it moves either onto a scoped helper thread (when
+        // already inside a runtime) or runs inline — the future is consumed by exactly one branch.
+        let block = move || -> Result<T> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow!("failed to build tokio runtime: {e}"))?;
+            rt.block_on(async move {
+                match timeout {
+                    Some(dur) => tokio::time::timeout(dur, fut)
+                        .await
+                        .map_err(|_| anyhow!("algod call exceeded timeout of {dur:?}")),
+                    None => Ok(fut.await),
+                }
+            })
+        };
+        // If we are already in a tokio runtime, we must avoid a nested block_on and the "cannot drop
+        // runtime" panic during unwinding/drop — run `block` on a scoped helper thread.
         if tokio::runtime::Handle::try_current().is_ok() {
-            return std::thread::scope(|s| {
-                let handle = s.spawn(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("failed to build temporary tokio runtime");
-                    rt.block_on(fut)
-                });
-                handle
+            std::thread::scope(|s| {
+                s.spawn(block)
                     .join()
-                    .map_err(|_| anyhow!("rt_block_on thread panicked"))
-            });
+                    .map_err(|_| anyhow!("rt_block_on thread panicked"))?
+            })
+        } else {
+            block()
         }
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow!("failed to build tokio runtime: {e}"))?;
-        Ok(rt.block_on(fut))
     }
 
     // Helper: parse address string into algonaut Address.
