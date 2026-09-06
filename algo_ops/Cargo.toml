@@ -32,7 +32,7 @@ rand_core = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 # Only pulled in when `test-support` is enabled; flips gated helpers to `pub`.
