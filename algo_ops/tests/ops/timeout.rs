@@ -3,22 +3,22 @@
 //! accepts a connection and never replies, so the HTTP response read blocks until the timeout fires.
 
 use algo_ops::{AlgoChainConfig, AlgoOps};
-use std::io::Read;
 use std::net::{SocketAddr, TcpListener};
 use std::time::{Duration, Instant};
 
-/// bind a listener that accepts connections, reads the request, then holds the socket open without ever
-/// responding — a client's HTTP call blocks on the response read until it is cancelled. Returns the
-/// bound address; the listener thread runs for the test's lifetime.
+/// bind a listener that accepts connections and holds them open without ever reading the request or
+/// writing a response — a client's HTTP call blocks on the response read until it is cancelled. Returns
+/// the bound address; the listener thread runs for the test's lifetime.
 fn stalled_endpoint() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
     std::thread::spawn(move || {
+        // Hold every accepted socket open and NEVER read the request or write a response — the client's
+        // response read blocks indefinitely, a true hang, so it is the timeout (not a connection close)
+        // that ends the call. Keeping the sockets in scope stops them being dropped/closed.
+        let mut held = Vec::new();
         for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf); // consume the request line, then never respond.
-            std::thread::sleep(Duration::from_secs(30));
+            held.push(stream);
         }
     });
     addr
