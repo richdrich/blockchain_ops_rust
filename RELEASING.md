@@ -5,28 +5,37 @@ How the crates are published to [crates.io]. For day-to-day development see
 
 ## Flow
 
-All promotion goes through `master`, which is gated by the required `quality`
-and `unit` checks (the `integration` localnet bucket also runs on every push to
-`master`).
+`master` always sits one patch ahead of the published release (e.g. crates.io at
+`0.7.7`, `master` at `0.7.8`). Releasing that version is one command, run by the
+repo owner from a clean checkout with `gh` authenticated:
 
-1. **Deployment pull request (PR):** open a PR from `master` into the long-lived
-   `deployed` branch. The `deploy-guard` check enforces that the PR head is a
-   commit already on `master`; branch protection on `deployed` requires the
-   `quality`, `unit`, and `integration` checks to be green. (Add the `localnet`
-   label to the deployment PR so `integration` runs on it pre-merge.)
-2. **Deploy on merge:** merging the PR pushes to `deployed` and triggers
-   [`deploy.yml`](.github/workflows/deploy.yml), which:
-   - re-runs the fast checks, unit tests, and the localnet integration bucket;
-   - publishes `blockchain_ops`, then `algo_ops`, then `sidewinder_ops`, to
-     crates.io via Trusted Publishing (OpenID Connect / OIDC) — no stored
-     registry token (each is published before the crates that depend on it);
-   - tags the released commit `vX.Y.Z`;
-   - opens a next-patch version-bump PR on `master` (authored by the GitHub App
-     so it triggers the required checks).
-3. **Version bump:** review and merge that bump PR on `master`; it raises both
-   crates in lockstep to the next patch (via `cargo set-version --bump patch`),
-   so `master` stays one patch ahead of the published release, ready for the
-   following deploy.
+```
+scripts/deploy 0.7.8
+```
+
+The argument is the version to publish and must equal the version already on
+`master` — it is a safety assertion of exactly what ships (pass `--yes` to skip
+the pre-publish confirmation prompt). [`scripts/deploy`](scripts/deploy) then, in
+order:
+
+1. **Raises the deployment pull request (PR)** `master` -> `deployed` and labels
+   it `localnet` so the `integration` check runs on it. The `deploy-guard` check
+   enforces that the PR head is a commit already on `master`.
+2. **Waits for the required checks** (`quality`, `unit`, `integration`) to pass.
+3. **Merges it** with `--admin` (the owner cannot self-approve a review gate, and
+   the checks are already green). The push to `deployed` triggers
+   [`deploy.yml`](.github/workflows/deploy.yml), which re-runs every gate, then
+   publishes `blockchain_ops`, `algo_ops`, then `sidewinder_ops` to crates.io via
+   Trusted Publishing (OpenID Connect / OIDC — no stored registry token; each is
+   published before the crates that depend on it), and tags the commit `vX.Y.Z`.
+4. **Waits for that deploy run to succeed**, then **bumps `master` to the next
+   patch** (`cargo set-version`, all crates in lockstep) and pushes it **directly,
+   with no PR**, so `master` is ready for the following deploy.
+
+To deploy manually instead (e.g. `gh`/script unavailable), do steps 1–3 by hand —
+open the `master` -> `deployed` PR, add the `localnet` label, get it green, merge
+— then bump `master` yourself (`cargo set-version --bump patch`, commit, push);
+`deploy.yml` no longer opens a bump PR.
 
 ## One-time setup (required before the first deploy)
 
@@ -65,42 +74,22 @@ manual, after which continuous integration (CI) is token-free.
    GitHub repository `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After
    this the deploy job authenticates via OIDC and no registry token is ever stored.
 
-3. **Set up the version-bump GitHub App** so the automated bump PR is authored
-   by the App rather than the default `GITHUB_TOKEN` — the App's pull requests
-   (PRs) trigger the required `quality`/`unit` checks, so the bump PR is
-   mergeable.
-
-   a. **Create the App.** GitHub → Settings → Developer settings → GitHub Apps →
-      New GitHub App. Set a name (e.g. `blockchain-ops-release`) and a
-      homepage (your GitHub profile is fine). Under **Webhook**, uncheck
-      `Active` (no webhook URL needed).
-
-   b. **Repository permissions** (Read & write): **Contents** and
-      **Pull requests**. (Add **Administration** only if you later protect the
-      release tags.) No account/organization permissions are needed.
-
-   c. **Installation scope.** Choose "Only on this account", then **Create**.
-
-   d. **Generate a private key.** On the App's page, under
-      "Private keys", click **Generate a private key** — a `.pem` file
-      downloads. Note the numeric **App ID** shown near the top of the same page.
-
-   e. **Install the App** on `richdrich/blockchain_ops_rust`
-      (App page → Install App → pick the repo).
-
-   f. **Store two repository secrets** (repo → Settings → Secrets and variables →
-      Actions), with exactly these names — they are what `deploy.yml` reads:
-      - `VERSION_BUMP_APP_ID` — the numeric App ID from step (d).
-      - `VERSION_BUMP_APP_PRIVATE_KEY` — the full contents of the `.pem` file.
-
-   The deploy job's `bump` step exchanges these for a short-lived token via
-   `actions/create-github-app-token` and authors the bump PR with it.
-
-4. **Create branch protection / a ruleset on `deployed`** requiring the
+3. **Protect `deployed`** with branch protection / a ruleset requiring the
    `quality`, `unit`, and `integration` status checks, so a deployment PR cannot
-   merge unless all gates are green.
+   merge unless all gates are green. `scripts/deploy` waits for those checks and
+   then merges with `--admin`, so the release actor must have **admin** on the
+   repo (the owner does) and be allowed to bypass the check/review requirement on
+   merge.
 
-After these four steps, every subsequent release is just: open a deployment PR,
-get it green, merge.
+4. **Allow the release actor to push directly to `master`.** The script's final
+   step bumps `master` to the next patch with a PR-less push. If `master` is
+   protected, add the owner (or the release actor) to that rule's **bypass list**
+   so the direct push is accepted; otherwise the bump must be done by hand.
+
+The former version-bump GitHub App (and its `VERSION_BUMP_APP_ID` /
+`VERSION_BUMP_APP_PRIVATE_KEY` secrets) is **no longer used** — the bump is a
+direct push from `scripts/deploy` — and those secrets can be removed.
+
+After these steps, every subsequent release is just `scripts/deploy <version>`.
 
 [crates.io]: https://crates.io
