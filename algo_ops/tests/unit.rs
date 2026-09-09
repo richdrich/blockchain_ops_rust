@@ -39,6 +39,8 @@ mod generate_keypair;
 mod node_errors;
 #[path = "ops/rate_limit.rs"]
 mod rate_limit;
+#[path = "ops/required_extra_pages.rs"]
+mod required_extra_pages;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]

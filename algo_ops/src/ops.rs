@@ -3318,6 +3318,15 @@ impl AlgoOps {
     }
 
     #[inline]
+    /// The number of *extra* program pages a create needs for a combined approval+clear program of
+    /// `program_size` bytes. The AVM allots 2048 bytes per page (one page included, so no extra pages
+    /// up to 2048); each additional started page is one extra page. Exposed under `test-support` so the
+    /// page-count arithmetic is unit-tested without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn required_extra_pages(program_size: usize) -> u32 {
+        (program_size.saturating_sub(1) / 2048) as u32
+    }
+
     fn estimate_fee_for_programs(
         params: &algonaut::model::algod::SuggestedParams,
         sizes: &[usize],
@@ -3458,6 +3467,14 @@ impl AlgoOps {
         // Build create application transaction
         let mut builder =
             algonaut::transaction::CreateApplication::new(sender, approval, clear, gs, ls);
+        // The AVM caps a program at 2048 bytes per page; a combined approval+clear larger than one
+        // page must request the extra pages at create time (each adds 2048 bytes of budget, and
+        // 100_000 microAlgos to the *app account's* minimum balance — not the create fee). Size them
+        // to the minimum that fits, so a contract that has grown past one page still deploys.
+        let extra_pages = Self::required_extra_pages(est_prog_size);
+        if extra_pages > 0 {
+            builder = builder.extra_pages(extra_pages);
+        }
         if let Some(aid) = asset_id {
             builder = builder.foreign_assets(vec![algonaut::core::AssetId(aid)]);
         }
