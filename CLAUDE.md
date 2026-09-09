@@ -4,6 +4,7 @@
 
 - Provide acceptance criteria / deliverables.
 - Before the issue is ready to code, describe a solution.
+- Do not reference (in a link) the bingle_admin repository, the bingle_notify repository or the user richdrich, you can reference by name here.
 - When creating a sub-issue (child of an epic or parent issue), set its milestone to match the parent issue's milestone.
 
 ## Test structure (rust)
@@ -48,8 +49,8 @@
 4. Build the docs with warnings denied — `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` — so broken or private intra-doc links fail locally rather than in continuous integration. Continuous integration runs this and treats warnings as errors.
 
 ## Git notes
-
-- While still modifying a PR, keep it in draft until it is ready for review/merge.
+- Make all changes through the branch -> PR -> review -> merge workflow. You can land directly on a PR when you don't need input before it.
+- *While still modifying a PR*, and if it is incomplete (doesn't yet meet requirements) keep it in draft.
 - When the PR is complete and meets all requirements, mark it ready for review/merge.
 - Any PR that is not a draft must target the repository's default branch. Keep stacked work in draft with its feature-branch base until that base merges, then retarget the PR to the default branch and mark it ready. A ready PR based on another feature branch merges into that branch — not the default branch — so the work shows as merged on GitHub yet silently never reaches it. Continuous integration can enforce this with a default-branch check.
-- Do not commit without asking for review.
+- Try to keep the IDE on the working branch, unless for instance you are using an agent in another worktree. Return to master when the PR is merged and you are idle.
