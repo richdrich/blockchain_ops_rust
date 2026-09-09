@@ -354,7 +354,7 @@ fn incremental_ingest_returning_none_removes_the_account() {
 }
 
 #[test]
-fn paginated_full_scan_follows_next_token_and_watermarks_the_max_round() {
+fn paginated_full_scan_follows_next_token_and_watermarks_the_min_round() {
     let cache = Mutex::new(AccountScanCache::<ScannedAccount>::new());
     let stub = StubIndexer::new(
         vec![
@@ -374,8 +374,42 @@ fn paginated_full_scan_follows_next_token_and_watermarks_the_max_round() {
     );
     let cache = cache.lock().unwrap();
     assert_eq!(cache.entries.len(), 2);
-    // The watermark is the greatest current-round across the pages.
-    assert_eq!(cache.last_round, 22);
+    // A full scan watermarks at the *minimum* current-round across its pages (20, not 22): accounts
+    // are mutable and paged by address, so anchoring low lets the next incremental refresh re-catch
+    // anything a later page raced past mid-scan.
+    assert_eq!(cache.last_round, 20);
+}
+
+#[test]
+fn full_scan_watermark_lets_next_refresh_recatch_a_mid_scan_change() {
+    // A two-page bootstrap where the pages advance the chain (page 1 at round 20, page 2 at 22). The
+    // watermark anchors at the minimum (20), so a following stale refresh discovers changes from round
+    // 21 on — re-catching an account whose opt-in landed on an already-traversed page during the
+    // bootstrap. Anchoring at the max (22) would start the next refresh at 23 and miss it forever.
+    let cache = Mutex::new(AccountScanCache::<ScannedAccount>::new());
+    let stub = StubIndexer::new(
+        vec![
+            full_page(vec![acct("A", "bit", "1")], Some("page2"), 20),
+            full_page(vec![acct("B", "bit", "1")], None, 22),
+        ],
+        // The racer C opted in at round 21 (during the bootstrap) but sorted before the cursor, so the
+        // full scan missed it; the next refresh's change discovery surfaces it.
+        vec![changed_page(&["C"], None, 25)],
+        vec![("C", Some(acct("C", "bit", "1")))],
+    );
+
+    run(&cache, QueryMode::Refresh, None, 1_000, &stub, keep_all);
+    assert_eq!(cache.lock().unwrap().last_round, 20);
+
+    // Stale refresh: change discovery must start at min_round 21 (watermark 20 + 1), catching C.
+    run(&cache, QueryMode::Refresh, None, 2_000, &stub, keep_all);
+    assert_eq!(stub.changed_calls.borrow().clone(), vec![(21, None)]);
+    let cache = cache.lock().unwrap();
+    assert!(
+        cache.entries.iter().any(|(a, _)| a == "C"),
+        "the mid-scan opt-in must be re-caught by the next incremental refresh"
+    );
+    assert_eq!(cache.last_round, 25);
 }
 
 #[test]
@@ -482,4 +516,94 @@ fn each_page_and_re_read_is_one_request() {
         + stub.lookup_calls.borrow().len();
     // 1 full page + 1 change page + 2 re-reads = 4 outbound requests.
     assert_eq!(total, 4);
+}
+
+// `collect_changed_addresses` is exposed under `test-support`; build indexer `Transaction` values
+// with the algonaut model constructors to guard the address walk directly.
+use algonaut::model::indexer::transaction::TxType;
+use algonaut::model::indexer::{OnCompletion, Transaction, TransactionApplication};
+
+// An application-call transaction from `sender` against `app_id`, referencing `accounts` as foreign
+// accounts (the admin-sets-another-account's-bit shape).
+fn appl_txn(sender: &str, app_id: u64, accounts: &[&str]) -> Transaction {
+    let mut app = TransactionApplication::new(app_id, OnCompletion::Noop);
+    if !accounts.is_empty() {
+        app.accounts = Some(accounts.iter().map(|a| a.to_string()).collect());
+    }
+    let mut txn = Transaction::new(1_000, 1, 1_000, sender.to_string(), TxType::Appl);
+    txn.application_transaction = Some(Box::new(app));
+    txn
+}
+
+#[test]
+fn collect_changed_addresses_walks_sender_foreign_accounts_and_inner_txns() {
+    // The production path the Bingle membership cache depends on: an *admin* app-call (sender = ADMIN)
+    // that sets a *different* account's local-state bit — the changed account rides in the app-call's
+    // foreign `accounts` array, not as the sender. The walk must still surface it (plus the sender),
+    // and recurse into inner transactions, or the incremental refresh would never re-read it.
+    let mut inner = appl_txn("INNER_SENDER", 42, &[]);
+    inner.application_transaction = None; // a plain inner payment carrying only its sender
+
+    let mut txn = appl_txn("ADMIN", 42, &["MEMBER_A", "MEMBER_B"]);
+    txn.inner_txns = Some(vec![inner]);
+
+    let mut out = Vec::new();
+    AlgoOps::collect_changed_addresses(&txn, &mut out);
+
+    // Sender, both foreign accounts, and the inner txn's sender are all surfaced (order preserved:
+    // sender, then foreign accounts, then inner).
+    assert_eq!(
+        out,
+        vec![
+            "ADMIN".to_string(),
+            "MEMBER_A".to_string(),
+            "MEMBER_B".to_string(),
+            "INNER_SENDER".to_string(),
+        ]
+    );
+    // Specifically, a foreign account that is *not* the sender is discovered — the case no other test
+    // covers.
+    assert!(out.contains(&"MEMBER_A".to_string()));
+    assert_ne!("MEMBER_A", "ADMIN");
+}
+
+#[test]
+fn incremental_refresh_rereads_a_foreign_account_set_by_an_admin() {
+    // End-to-end through the engine: the change-discovery page carries a member changed only as a
+    // foreign account of an admin's app-call. Feeding the addresses `collect_changed_addresses`
+    // produced (ADMIN + MEMBER) into a `changed_page`, the engine re-reads MEMBER and picks up its new
+    // bit — even though MEMBER never sent a transaction. ADMIN is not opted in, so its re-read is a
+    // no-op (None).
+    let txn = appl_txn("ADMIN", 42, &["MEMBER"]);
+    let mut addresses = Vec::new();
+    AlgoOps::collect_changed_addresses(&txn, &mut addresses);
+    let addr_refs: Vec<&str> = addresses.iter().map(String::as_str).collect();
+
+    let cache = Mutex::new(AccountScanCache {
+        last_round: 10,
+        last_updated: 100,
+        entries: vec![("MEMBER".to_string(), acct("MEMBER", "bit", "0"))],
+    });
+    let stub = StubIndexer::new(
+        vec![],
+        vec![changed_page(&addr_refs, None, 15)],
+        vec![
+            ("ADMIN", None), // the admin is not opted in — re-read is a no-op
+            ("MEMBER", Some(acct("MEMBER", "bit", "1"))),
+        ],
+    );
+
+    run(&cache, QueryMode::Refresh, None, 1_000, &stub, keep_all);
+
+    // Both surfaced addresses are re-read; only the opted-in member ends up in the set, with its bit
+    // flipped by the admin's foreign-account call.
+    assert_eq!(
+        stub.lookup_calls.borrow().clone(),
+        vec!["ADMIN".to_string(), "MEMBER".to_string()]
+    );
+    let cache = cache.lock().unwrap();
+    assert_eq!(
+        cache.entries,
+        vec![("MEMBER".to_string(), acct("MEMBER", "bit", "1"))]
+    );
 }

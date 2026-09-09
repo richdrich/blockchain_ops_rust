@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -441,14 +442,21 @@ impl<T> Default for TxnScanCache<T> {
 /// [`last_round`]: AccountScanCache::last_round
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountScanCache<T> {
-    /// The highest round the cache has scanned through — the indexer's `current-round` at the last
-    /// refresh. The next incremental refresh discovers accounts that changed after this round. `0`
-    /// before any scan.
+    /// The round the cache has scanned through — the resume point the next incremental refresh
+    /// discovers changes *after*. A full scan stamps this at the **minimum** `current-round` across its
+    /// pages (not the max): `search_for_accounts` paginates by address over mutable accounts with no
+    /// round pinning, so anchoring at the earliest page's round lets the next refresh re-catch any
+    /// account changed mid-scan. An incremental refresh advances it to the max `current-round` of the
+    /// (immutable, round-ordered) transaction index it scans. `0` before any scan.
     pub last_round: u64,
     /// Unix timestamp (seconds) of the last refresh that hit the network; `0` before any scan. Used
     /// to degrade a fresh [`QueryMode::Refresh`] to [`QueryMode::CacheOnly`].
     pub last_updated: u64,
-    /// The accumulated caller-defined entries, each paired with its account address (the dedup key).
+    /// The accumulated caller-defined entries, each paired with its account address (the dedup key), in
+    /// scan order. A `Vec` (not a map) to keep the serialized shape simple and match [`TxnScanCache`];
+    /// the incremental refresh upserts/removes by a linear scan, so a use-case holding many thousands
+    /// of accounts pays `O(entries)` per changed account on each refresh (fine while the changed set
+    /// per poll is small).
     pub entries: Vec<(String, T)>,
 }
 
@@ -2584,14 +2592,29 @@ impl AlgoOps {
             // Full scan: page every opted-in account to completion, rebuilding the set.
             Some(true) => {
                 cache.entries.clear();
-                let mut watermark = 0u64;
+                // Watermark the full scan at the *minimum* `current-round` across its pages (the first
+                // page's, since it only grows), NOT the max. `search_for_accounts` paginates by address
+                // over *mutable* accounts with no round pinning, so an opt-in / admin bit-set that lands
+                // mid-scan on an already-traversed address range is missed by this scan. Anchoring the
+                // watermark at the earliest page's round means the next incremental refresh re-discovers
+                // (via the transaction index) every account touched from that round on, re-catching the
+                // raced change — at the cost of a small re-scan overlap. Taking the max instead would
+                // jump `last_round` past the race and lose the account until a `ForceFull`. (The
+                // transaction scan can safely take the max because its rows are immutable and ordered by
+                // round; account pages are neither.)
+                let mut watermark: Option<u64> = None;
                 let mut next: Option<String> = None;
                 loop {
                     let page = fetch_full_page(next.as_deref())?;
-                    watermark = watermark.max(page.current_round);
+                    watermark = Some(match watermark {
+                        Some(w) => w.min(page.current_round),
+                        None => page.current_round,
+                    });
                     for acct in &page.accounts {
                         if let Some(entry) = ingest(acct) {
-                            Self::upsert_account_entry(&mut cache.entries, &acct.address, entry);
+                            // A paginated `search_for_accounts` yields each address at most once, so the
+                            // rebuilt set needs no dedup — push directly (O(1) per account).
+                            cache.entries.push((acct.address.clone(), entry));
                         }
                     }
                     match page.next_token {
@@ -2599,7 +2622,8 @@ impl AlgoOps {
                         None => break,
                     }
                 }
-                cache.last_round = watermark;
+                // The loop always fetches at least one page, so `watermark` is always set.
+                cache.last_round = watermark.unwrap_or(cache.last_round);
                 cache.last_updated = now;
             }
             // Incremental refresh: the account index has no min-round filter, so discover which
@@ -2607,14 +2631,20 @@ impl AlgoOps {
             // only those (an account's local state can change, so this revisits rather than appends).
             Some(false) => {
                 let min_round = cache.last_round + 1;
+                // The change-discovery scan runs over the transaction index (immutable rows ordered by
+                // round), so the max `current-round` across its pages is a safe watermark — as in the
+                // transaction scan.
                 let mut watermark = cache.last_round;
                 let mut next: Option<String> = None;
+                // Accumulate the distinct changed addresses in first-seen order: `seen` gives O(1)
+                // dedup, `changed` preserves a deterministic re-read order.
+                let mut seen: HashSet<String> = HashSet::new();
                 let mut changed: Vec<String> = Vec::new();
                 loop {
                     let page = fetch_changed(min_round, next.as_deref())?;
                     watermark = watermark.max(page.current_round);
                     for addr in page.addresses {
-                        if !changed.contains(&addr) {
+                        if seen.insert(addr.clone()) {
                             changed.push(addr);
                         }
                     }
@@ -2645,7 +2675,10 @@ impl AlgoOps {
     }
 
     /// Insert `entry` under `address`, replacing any existing entry for that address (the account set
-    /// is keyed by address, so a revisit updates in place rather than duplicating).
+    /// is keyed by address, so a revisit updates in place rather than duplicating). Linear in the
+    /// current entry count; only the incremental refresh calls it, once per *changed* account, so the
+    /// cost is `O(changed × entries)` per refresh — negligible while the changed set per poll is small.
+    /// The full-scan bootstrap pushes directly instead (see above), so it stays `O(entries)`.
     fn upsert_account_entry<T>(entries: &mut Vec<(String, T)>, address: &str, entry: T) {
         if let Some(slot) = entries.iter_mut().find(|(a, _)| a == address) {
             slot.1 = entry;
@@ -2764,22 +2797,22 @@ impl AlgoOps {
         })
     }
 
-    /// Collect every address a transaction touched into `out` (deduplicated): the sender, any accounts
-    /// referenced by an application-call transaction, and — recursively — the same for inner
-    /// transactions. These are the accounts whose local state a change-discovery page must re-read.
-    fn collect_changed_addresses(
+    /// Append every address a transaction touched to `out`: the sender, any accounts referenced by an
+    /// application-call transaction (so an admin app-call that sets *another* account's local-state bit
+    /// — that account is a foreign account, not the sender — is still discovered), and, recursively,
+    /// the same for inner transactions. These are the accounts whose local state a change-discovery
+    /// page must re-read. Appends without deduplicating — the engine dedups across the whole scan with a
+    /// `HashSet`, so this stays linear in the transaction's address count.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn collect_changed_addresses(
         txn: &algonaut::model::indexer::Transaction,
         out: &mut Vec<String>,
     ) {
-        if !out.contains(&txn.sender) {
-            out.push(txn.sender.clone());
-        }
+        out.push(txn.sender.clone());
         if let Some(app_txn) = &txn.application_transaction {
             if let Some(accounts) = &app_txn.accounts {
                 for addr in accounts {
-                    if !out.contains(addr) {
-                        out.push(addr.clone());
-                    }
+                    out.push(addr.clone());
                 }
             }
         }
