@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -325,6 +326,24 @@ pub struct ScannedTxn {
     pub note: Option<Vec<u8>>,
 }
 
+/// An account opted into an application, as seen by the incremental cached account scanner
+/// ([`AlgoOps::fetch_opted_in_accounts_cached`]).
+///
+/// The account-scan sibling of [`ScannedTxn`]. Carries the account address plus the account's
+/// **decoded local state for the scanned app** — the same `(key, value)` shape
+/// [`AlgoOps::local_state_for_account`] returns — so a caller decodes its own local-state field (a
+/// membership bit, an endpoint byte-slice) without `algo_ops` knowing the schema. Carries only plain
+/// types (no `algonaut` types on the boundary).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScannedAccount {
+    /// The account's address, in standard Algorand address form.
+    pub address: String,
+    /// The account's local-state key/values for the scanned app, decoded as
+    /// [`AlgoOps::local_state_for_account`] decodes them; empty when the app holds no local state for
+    /// the account. Since the scan is app-scoped, an account only surfaces here while it is opted in.
+    pub local_state: Vec<(String, String)>,
+}
+
 /// Optional server-side narrowing for [`AlgoOps::fetch_transactions_cached`], so the incremental
 /// fetch stays cheap. Every field is optional; an all-`None` filter scans every transaction.
 ///
@@ -405,6 +424,60 @@ impl<T> Default for TxnScanCache<T> {
     }
 }
 
+/// A caller-owned incremental scan cache for the accounts opted into an application — the account-scan
+/// sibling of [`TxnScanCache`], holding the accumulated account set (keyed by address) plus the
+/// `last_round` / `last_updated` watermark.
+///
+/// Unlike the append-only [`TxnScanCache`] (confirmed transactions are immutable), an account's local
+/// state can change, so this is **append-with-revisit**: an incremental refresh discovers which
+/// accounts changed past [`last_round`] and re-reads only those, replacing (or, on opt-out, removing)
+/// their entry. Entries are therefore keyed by address — `(address, caller entry)` pairs, deduplicated
+/// by address — so a revisit updates in place rather than duplicating.
+///
+/// The cache is caller-owned and passed in (not held inside [`AlgoOps`]), so one process holds one
+/// cache per use-case (per app) and tests can inject prefilled caches. Derives
+/// `Serialize`/`Deserialize` (when `T` does) so a caller can persist it across restarts and resume the
+/// incremental scan from the saved watermark rather than re-bootstrapping the whole set.
+///
+/// [`last_round`]: AccountScanCache::last_round
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountScanCache<T> {
+    /// The round the cache has scanned through — the resume point the next incremental refresh
+    /// discovers changes *after*. A full scan stamps this at the **minimum** `current-round` across its
+    /// pages (not the max): `search_for_accounts` paginates by address over mutable accounts with no
+    /// round pinning, so anchoring at the earliest page's round lets the next refresh re-catch any
+    /// account changed mid-scan. An incremental refresh advances it to the max `current-round` of the
+    /// (immutable, round-ordered) transaction index it scans. `0` before any scan.
+    pub last_round: u64,
+    /// Unix timestamp (seconds) of the last refresh that hit the network; `0` before any scan. Used
+    /// to degrade a fresh [`QueryMode::Refresh`] to [`QueryMode::CacheOnly`].
+    pub last_updated: u64,
+    /// The accumulated caller-defined entries, each paired with its account address (the dedup key), in
+    /// scan order. A `Vec` (not a map) to keep the serialized shape simple and match [`TxnScanCache`];
+    /// the incremental refresh upserts/removes by a linear scan, so a use-case holding many thousands
+    /// of accounts pays `O(entries)` per changed account on each refresh (fine while the changed set
+    /// per poll is small).
+    pub entries: Vec<(String, T)>,
+}
+
+impl<T> AccountScanCache<T> {
+    /// An empty cache: no rounds scanned, no freshness stamp, no entries. The first
+    /// [`QueryMode::Refresh`] against it performs a full scan.
+    pub fn new() -> Self {
+        AccountScanCache {
+            last_round: 0,
+            last_updated: 0,
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<T> Default for AccountScanCache<T> {
+    fn default() -> Self {
+        AccountScanCache::new()
+    }
+}
+
 /// How [`AlgoOps::fetch_transactions_cached`] should treat the cache on this call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryMode {
@@ -427,6 +500,37 @@ pub enum QueryMode {
 pub struct TxnScanPage {
     /// The confirmed, in-scope transactions on this page.
     pub txns: Vec<ScannedTxn>,
+    /// The indexer's pagination token for the following page, or `None` at the end of the results.
+    pub next_token: Option<String>,
+    /// The round at which the indexer computed these results — used as the cache watermark.
+    pub current_round: u64,
+}
+
+/// One page of a full opted-in-account scan: the page's accounts, the next-page token (`None` at the
+/// end of the results), and the indexer's `current-round` (the safe refresh watermark). Returned by
+/// the full-scan page fetcher [`AlgoOps::fetch_opted_in_accounts_cached`] drives; public so the engine
+/// can be unit-tested with a stubbed fetcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountScanPage {
+    /// The opted-in accounts on this page.
+    pub accounts: Vec<ScannedAccount>,
+    /// The indexer's pagination token for the following page, or `None` at the end of the results.
+    pub next_token: Option<String>,
+    /// The round at which the indexer computed these results — used as the cache watermark.
+    pub current_round: u64,
+}
+
+/// One page of the change-discovery scan an incremental account refresh runs: the addresses touched by
+/// app transactions past the watermark, the next-page token, and the indexer's `current-round`. The
+/// account index has no min-round filter, so an incremental refresh finds *which* accounts to re-read
+/// through the app-scoped transaction index instead. Returned by the change-discovery fetcher
+/// [`AlgoOps::fetch_opted_in_accounts_cached`] drives; public so the engine can be unit-tested with a
+/// stubbed fetcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedAddressesPage {
+    /// The addresses touched by this page's transactions (senders and app-call account references,
+    /// including inner transactions) — the accounts whose local state may have changed.
+    pub addresses: Vec<String>,
     /// The indexer's pagination token for the following page, or `None` at the end of the results.
     pub next_token: Option<String>,
     /// The round at which the indexer computed these results — used as the cache watermark.
@@ -1389,25 +1493,31 @@ impl AlgoOps {
         let v = serde_json::to_value(&info)
             .map_err(|e| anyhow!("failed to serialize account info: {e}"))?;
 
-        let als = match Self::json_get(&v, "apps_local_state", "apps-local-state")
-            .and_then(|x| x.as_array())
-        {
-            Some(a) => a,
-            None => return Ok(None),
-        };
+        Ok(Self::decode_app_local_state(&v, app_id))
+    }
+
+    /// Decode the local-state key/values an account holds for `app_id`, from the account's serialized
+    /// indexer/algod JSON (handling both snake_case and kebab-case field names). `None` when the JSON
+    /// carries no local state for that app — i.e. the account is not opted in. Shared by
+    /// [`AlgoOps::local_state_for_account`] (algod, single account) and the cached opted-in-account
+    /// scanner (indexer, whole app), so both decode local state identically.
+    fn decode_app_local_state(
+        account_json: &serde_json::Value,
+        app_id: u64,
+    ) -> Option<Vec<(String, String)>> {
+        let als =
+            Self::json_get(account_json, "apps_local_state", "apps-local-state")?.as_array()?;
         for st in als {
-            let id = st.get("id").and_then(|x| x.as_u64());
-            if id == Some(app_id) {
+            if st.get("id").and_then(|x| x.as_u64()) == Some(app_id) {
                 let keyvals_vec: Vec<serde_json::Value> =
                     Self::json_get(st, "key_value", "key-value")
                         .and_then(|x| x.as_array())
                         .cloned()
                         .unwrap_or_default();
-                let out = Self::decode_state_entries(&keyvals_vec);
-                return Ok(Some(out));
+                return Some(Self::decode_state_entries(&keyvals_vec));
             }
         }
-        Ok(None)
+        None
     }
 
     pub fn send_algo(&self, to_address: &str, amount_algos: f64) -> Result<()> {
@@ -2371,6 +2481,405 @@ impl AlgoOps {
             next_token,
             current_round: resp.current_round,
         })
+    }
+
+    /// Incrementally refresh a caller-owned [`AccountScanCache`] of the accounts opted into `app_id`,
+    /// leaving the refreshed set in `cache.entries` — the account-scan counterpart of
+    /// [`AlgoOps::fetch_transactions_cached`].
+    ///
+    /// The scan is **app-scoped** (the indexer `application-id` filter), so it hits an index and
+    /// cannot degrade into an unbounded scan. `ingest` maps each fetched [`ScannedAccount`] into a
+    /// cache entry, or `None` to skip it (so the caller decodes its own local-state field — a
+    /// membership bit, an endpoint byte-slice — and can drop accounts that do not match); **read
+    /// `cache.entries` after this returns** to use the refreshed `(address, entry)` set.
+    ///
+    /// - [`QueryMode::Refresh`] within `cache_lifetime_secs` performs **no** network call (it degrades
+    ///   to [`QueryMode::CacheOnly`]); an empty cache does a full paged-to-completion scan; a stale
+    ///   `Refresh` discovers the accounts changed past the watermark (via the app-scoped transaction
+    ///   index, which *does* support a min-round floor) and re-reads only those, replacing or removing
+    ///   their entry. [`QueryMode::CacheOnly`] never touches the network. [`QueryMode::ForceFull`]
+    ///   discards the cache and rebuilds it with a full scan.
+    /// - `cache_lifetime_secs` of `None` means no freshness window — a `Refresh` always refreshes.
+    /// - an empty result still stamps `last_updated`, so an all-empty scan is not re-run every poll.
+    ///
+    /// Every fetched page (each full-scan page, each change-discovery page, each per-account re-read)
+    /// is issued through [`algod_call`](Self::algod_call), so it counts against the per-request counter
+    /// ([`requests_made`](Self::requests_made)).
+    ///
+    /// **Locking:** the `cache` mutex is held for the whole refresh — every network round-trip — and
+    /// released before this returns, so concurrent refreshes of the same cache serialize (correct for
+    /// the intended one-poller-per-cache usage). Read the entries with a fresh lock afterwards; because
+    /// the refresh and that read take the lock separately, a second writer could mutate in between — so
+    /// one poller per cache is assumed.
+    ///
+    /// Surfaces `AlgoError::HostUnreachable` when the indexer is down. Ported from
+    /// `bingle_core::blockchain::algo_bingle::AlgoBingle::indexer_query_opted_in_accounts_sync`,
+    /// generalised down so it composes with the cached transaction scan and is reusable outside Bingle.
+    pub fn fetch_opted_in_accounts_cached<T>(
+        &self,
+        app_id: u64,
+        cache: &Mutex<AccountScanCache<T>>,
+        mode: QueryMode,
+        cache_lifetime_secs: Option<u64>,
+        ingest: impl Fn(&ScannedAccount) -> Option<T>,
+    ) -> Result<()> {
+        if app_id == 0 {
+            bail!("app_id must be > 0");
+        }
+        let client = self.indexer_client()?;
+        let now = Self::now_unix_secs();
+        Self::fetch_opted_in_accounts_cached_with(
+            cache,
+            mode,
+            cache_lifetime_secs,
+            now,
+            ingest,
+            |next| self.fetch_account_page(&client, app_id, next),
+            |min_round, next| self.fetch_changed_addresses_page(&client, app_id, min_round, next),
+            |address| self.lookup_opted_in_account(&client, app_id, address),
+        )
+    }
+
+    /// The network-free engine behind [`AlgoOps::fetch_opted_in_accounts_cached`]: the caching /
+    /// freshness / watermark / revisit logic, with the three network operations injected and the
+    /// wall-clock as `now`. `fetch_full_page(next)` pages a full scan; `fetch_changed(min_round, next)`
+    /// pages the change-discovery scan (addresses touched past `min_round`); `lookup_account(address)`
+    /// re-reads one account, returning `None` when it is no longer opted in. Exposed under
+    /// `test-support` so the engine is unit-tested with a stubbed, request-counting fetcher (no node).
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn fetch_opted_in_accounts_cached_with<T>(
+        cache: &Mutex<AccountScanCache<T>>,
+        mode: QueryMode,
+        cache_lifetime_secs: Option<u64>,
+        now: u64,
+        ingest: impl Fn(&ScannedAccount) -> Option<T>,
+        mut fetch_full_page: impl FnMut(Option<&str>) -> Result<AccountScanPage>,
+        mut fetch_changed: impl FnMut(u64, Option<&str>) -> Result<ChangedAddressesPage>,
+        mut lookup_account: impl FnMut(&str) -> Result<Option<ScannedAccount>>,
+    ) -> Result<()> {
+        let mut cache = cache
+            .lock()
+            .map_err(|_| anyhow!("account scan cache mutex poisoned"))?;
+
+        // Decide the scan kind: `None` = no network (CacheOnly, or a fresh Refresh); `Some(true)` = a
+        // full paged scan; `Some(false)` = an incremental change-discovery refresh from the watermark.
+        let scan: Option<bool> = match mode {
+            QueryMode::CacheOnly => None,
+            QueryMode::ForceFull => {
+                // Rebuild from scratch: drop the accumulated entries and the watermark, then full scan.
+                cache.entries.clear();
+                cache.last_round = 0;
+                Some(true)
+            }
+            QueryMode::Refresh => {
+                if cache.last_updated == 0 || cache.last_round == 0 {
+                    // Never scanned (a full scan that matched nothing still stamps `last_updated`),
+                    // so bootstrap with a full scan.
+                    Some(true)
+                } else if Self::scan_cache_is_fresh(cache.last_updated, now, cache_lifetime_secs) {
+                    // Within the freshness window — degrade to CacheOnly (zero network).
+                    None
+                } else {
+                    // Stale: discover and re-read only the accounts changed past the watermark.
+                    Some(false)
+                }
+            }
+        };
+
+        match scan {
+            // CacheOnly / fresh Refresh: leave the cache exactly as it is.
+            None => {}
+            // Full scan: page every opted-in account to completion, rebuilding the set.
+            Some(true) => {
+                cache.entries.clear();
+                // Watermark the full scan at the *minimum* `current-round` across its pages (the first
+                // page's, since it only grows), NOT the max. `search_for_accounts` paginates by address
+                // over *mutable* accounts with no round pinning, so an opt-in / admin bit-set that lands
+                // mid-scan on an already-traversed address range is missed by this scan. Anchoring the
+                // watermark at the earliest page's round means the next incremental refresh re-discovers
+                // (via the transaction index) every account touched from that round on, re-catching the
+                // raced change — at the cost of a small re-scan overlap. Taking the max instead would
+                // jump `last_round` past the race and lose the account until a `ForceFull`. (The
+                // transaction scan can safely take the max because its rows are immutable and ordered by
+                // round; account pages are neither.)
+                let mut watermark: Option<u64> = None;
+                let mut next: Option<String> = None;
+                loop {
+                    let page = fetch_full_page(next.as_deref())?;
+                    watermark = Some(match watermark {
+                        Some(w) => w.min(page.current_round),
+                        None => page.current_round,
+                    });
+                    for acct in &page.accounts {
+                        if let Some(entry) = ingest(acct) {
+                            // A paginated `search_for_accounts` yields each address at most once, so the
+                            // rebuilt set needs no dedup — push directly (O(1) per account).
+                            cache.entries.push((acct.address.clone(), entry));
+                        }
+                    }
+                    match page.next_token {
+                        Some(token) => next = Some(token),
+                        None => break,
+                    }
+                }
+                // The loop always fetches at least one page, so `watermark` is always set.
+                cache.last_round = watermark.unwrap_or(cache.last_round);
+                cache.last_updated = now;
+            }
+            // Incremental refresh: the account index has no min-round filter, so discover which
+            // accounts changed since the watermark via the app-scoped transaction index, then re-read
+            // only those (an account's local state can change, so this revisits rather than appends).
+            Some(false) => {
+                let min_round = cache.last_round + 1;
+                // The change-discovery scan runs over the transaction index (immutable rows ordered by
+                // round), so the max `current-round` across its pages is a safe watermark — as in the
+                // transaction scan.
+                let mut watermark = cache.last_round;
+                let mut next: Option<String> = None;
+                // Accumulate the distinct changed addresses in first-seen order: `seen` gives O(1)
+                // dedup, `changed` preserves a deterministic re-read order.
+                let mut seen: HashSet<String> = HashSet::new();
+                let mut changed: Vec<String> = Vec::new();
+                loop {
+                    let page = fetch_changed(min_round, next.as_deref())?;
+                    watermark = watermark.max(page.current_round);
+                    for addr in page.addresses {
+                        if seen.insert(addr.clone()) {
+                            changed.push(addr);
+                        }
+                    }
+                    match page.next_token {
+                        Some(token) => next = Some(token),
+                        None => break,
+                    }
+                }
+                // Re-read each changed account: upsert its refreshed entry, or remove it when the
+                // account has opted out (`None`) or the caller's `ingest` now rejects it.
+                for addr in &changed {
+                    match lookup_account(addr)? {
+                        Some(acct) => match ingest(&acct) {
+                            Some(entry) => {
+                                Self::upsert_account_entry(&mut cache.entries, addr, entry)
+                            }
+                            None => Self::remove_account_entry(&mut cache.entries, addr),
+                        },
+                        None => Self::remove_account_entry(&mut cache.entries, addr),
+                    }
+                }
+                cache.last_round = watermark;
+                cache.last_updated = now;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Insert `entry` under `address`, replacing any existing entry for that address (the account set
+    /// is keyed by address, so a revisit updates in place rather than duplicating). Linear in the
+    /// current entry count; only the incremental refresh calls it, once per *changed* account, so the
+    /// cost is `O(changed × entries)` per refresh — negligible while the changed set per poll is small.
+    /// The full-scan bootstrap pushes directly instead (see above), so it stays `O(entries)`.
+    fn upsert_account_entry<T>(entries: &mut Vec<(String, T)>, address: &str, entry: T) {
+        if let Some(slot) = entries.iter_mut().find(|(a, _)| a == address) {
+            slot.1 = entry;
+        } else {
+            entries.push((address.to_string(), entry));
+        }
+    }
+
+    /// Drop the entry for `address`, if any (an account that has opted out or no longer matches).
+    fn remove_account_entry<T>(entries: &mut Vec<(String, T)>, address: &str) {
+        entries.retain(|(a, _)| a != address);
+    }
+
+    /// Fetch one page of a full opted-in-account scan: `search_for_accounts` filtered to `app_id` (the
+    /// index-hitting filter), trimming the payload to what the local-state decode needs. Surfaces
+    /// `AlgoError::HostUnreachable` when the indexer is down.
+    fn fetch_account_page(
+        &self,
+        client: &algonaut::Indexer,
+        app_id: u64,
+        next: Option<&str>,
+    ) -> Result<AccountScanPage> {
+        let resp = match self.algod_call(|| {
+            client.search_for_accounts(
+                None,                                // asset_id
+                None,                                // limit — the indexer default page size
+                next,                                // next (pagination token)
+                None,                                // currency_greater_than
+                None,                                // include_all
+                Self::account_scan_excludes(), // exclude — trim assets/created-* from the payload
+                None,                          // currency_less_than
+                None,                          // auth_addr
+                None,                          // round
+                Some(algonaut::core::AppId(app_id)), // app_id — the index-hitting filter
+            )
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("search_for_accounts", &e.to_string()).into());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut accounts = Vec::with_capacity(resp.accounts.len());
+        for acct in &resp.accounts {
+            let v = serde_json::to_value(acct)
+                .map_err(|e| anyhow!("failed to serialize account: {e}"))?;
+            accounts.push(Self::scanned_account_from(&v, app_id));
+        }
+        let next_token = match resp.next_token {
+            Some(token) if !token.is_empty() => Some(token),
+            _ => None,
+        };
+        Ok(AccountScanPage {
+            accounts,
+            next_token,
+            current_round: resp.current_round,
+        })
+    }
+
+    /// Fetch one page of the change-discovery scan: `search_for_transactions` filtered to `app_id` with
+    /// the `min_round` watermark floor, collecting the addresses each transaction touched (sender,
+    /// app-call account references, and inner transactions). Surfaces `AlgoError::HostUnreachable` when
+    /// the indexer is down.
+    fn fetch_changed_addresses_page(
+        &self,
+        client: &algonaut::Indexer,
+        app_id: u64,
+        min_round: u64,
+        next: Option<&str>,
+    ) -> Result<ChangedAddressesPage> {
+        let resp = match self.algod_call(|| {
+            client.search_for_transactions(
+                None,                                // limit — the indexer default page size
+                next,                                // next (pagination token)
+                None,                                // note_prefix
+                None,                                // tx_type
+                None,                                // sig_type
+                None,                                // transaction_id
+                None,                                // round
+                Some(min_round),                     // min_round — the incremental watermark floor
+                None,                                // max_round
+                None,                                // asset_id
+                None,                                // before_time
+                None,                                // after_time
+                None,                                // currency_greater_than
+                None,                                // currency_less_than
+                None,                                // address
+                None,                                // address_role
+                None,                                // exclude_close_to
+                None,                                // rekey_to
+                Some(algonaut::core::AppId(app_id)), // application_id — the index-hitting filter
+            )
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(
+                    AlgoError::unreachable("search_for_transactions", &e.to_string()).into(),
+                );
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut addresses = Vec::new();
+        for txn in &resp.transactions {
+            Self::collect_changed_addresses(txn, &mut addresses);
+        }
+        let next_token = match resp.next_token {
+            Some(token) if !token.is_empty() => Some(token),
+            _ => None,
+        };
+        Ok(ChangedAddressesPage {
+            addresses,
+            next_token,
+            current_round: resp.current_round,
+        })
+    }
+
+    /// Append every address a transaction touched to `out`: the sender, any accounts referenced by an
+    /// application-call transaction (so an admin app-call that sets *another* account's local-state bit
+    /// — that account is a foreign account, not the sender — is still discovered), and, recursively,
+    /// the same for inner transactions. These are the accounts whose local state a change-discovery
+    /// page must re-read. Appends without deduplicating — the engine dedups across the whole scan with a
+    /// `HashSet`, so this stays linear in the transaction's address count.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn collect_changed_addresses(
+        txn: &algonaut::model::indexer::Transaction,
+        out: &mut Vec<String>,
+    ) {
+        out.push(txn.sender.clone());
+        if let Some(app_txn) = &txn.application_transaction {
+            if let Some(accounts) = &app_txn.accounts {
+                for addr in accounts {
+                    out.push(addr.clone());
+                }
+            }
+        }
+        if let Some(inner_txns) = &txn.inner_txns {
+            for inner in inner_txns {
+                Self::collect_changed_addresses(inner, out);
+            }
+        }
+    }
+
+    /// Re-read one account and return it as a [`ScannedAccount`] **only while it still holds local
+    /// state for `app_id`** — `None` once the account has opted out (or was deleted), so the caller
+    /// drops it from the cache. Surfaces `AlgoError::HostUnreachable` when the indexer is down.
+    fn lookup_opted_in_account(
+        &self,
+        client: &algonaut::Indexer,
+        app_id: u64,
+        address: &str,
+    ) -> Result<Option<ScannedAccount>> {
+        let addr = Self::parse_address(address)?;
+        let resp = match self.algod_call(|| {
+            client.lookup_account_by_id(&addr, None, None, Self::account_scan_excludes())
+        }) {
+            Ok(v) => v,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("lookup_account_by_id", &e.to_string()).into());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let acct = *resp.account;
+        let v =
+            serde_json::to_value(&acct).map_err(|e| anyhow!("failed to serialize account: {e}"))?;
+        match Self::decode_app_local_state(&v, app_id) {
+            Some(local_state) => Ok(Some(ScannedAccount {
+                address: acct.address,
+                local_state,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    /// Build a [`ScannedAccount`] from an account's serialized indexer JSON: the address plus its
+    /// decoded local state for `app_id` (empty when absent). Bakes in no schema — the caller's
+    /// `ingest` decodes its own field from `local_state`.
+    fn scanned_account_from(account_json: &serde_json::Value, app_id: u64) -> ScannedAccount {
+        let address = account_json
+            .get("address")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let local_state = Self::decode_app_local_state(account_json, app_id).unwrap_or_default();
+        ScannedAccount {
+            address,
+            local_state,
+        }
+    }
+
+    /// The indexer `exclude` list for account reads in the opted-in scan: drop the parts of an account
+    /// the local-state decode never touches (asset holdings, created apps/assets) to trim the payload,
+    /// while keeping `apps-local-state` (the whole point of the scan).
+    fn account_scan_excludes() -> Option<Vec<String>> {
+        Some(vec![
+            "assets".to_string(),
+            "created-apps".to_string(),
+            "created-assets".to_string(),
+        ])
     }
 
     pub fn set_asset_clawback_to_app(&self, app_id: u64, asset_id: u64) -> Result<()> {
