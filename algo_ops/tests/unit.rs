@@ -23,6 +23,8 @@ mod change_reserve;
 mod daily_budget;
 #[path = "ops/error_classification.rs"]
 mod error_classification;
+#[path = "ops/fetch_opted_in_accounts_cached.rs"]
+mod fetch_opted_in_accounts_cached;
 #[path = "ops/fetch_transactions_cached.rs"]
 mod fetch_transactions_cached;
 #[path = "ops/find_transaction_by_note_and_sender.rs"]

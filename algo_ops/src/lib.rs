@@ -12,10 +12,10 @@ mod ops;
 
 pub use error::AlgoError;
 pub use ops::{
-    AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg, ConfirmedTxn, DailyBudgetConfig,
-    DailyBudgetState, KeyProvider, QueryMode, RateLimitConfig, RateLimitMode, ScannedTxn,
-    TransactionGroupBuilder, TxnScanCache, TxnScanFilter, TxnScanPage, address_to_byte_key,
-    byte_key_to_address,
+    AccountScanCache, AccountScanPage, AlgoChainConfig, AlgoOps, AlgoSuggestedParams, AppArg,
+    ChangedAddressesPage, ConfirmedTxn, DailyBudgetConfig, DailyBudgetState, KeyProvider,
+    QueryMode, RateLimitConfig, RateLimitMode, ScannedAccount, ScannedTxn, TransactionGroupBuilder,
+    TxnScanCache, TxnScanFilter, TxnScanPage, address_to_byte_key, byte_key_to_address,
 };
 
 // The token bucket and daily-budget limiters are internal types, re-exported only under
