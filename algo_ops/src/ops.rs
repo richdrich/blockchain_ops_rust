@@ -3621,6 +3621,52 @@ impl AlgoOps {
             args.len()
         );
         algo_log!("[call_app] tx={:?}", tx);
+        self.sign_submit_and_fetch_logs(tx)
+    }
+
+    /// Call an application method with explicit foreign accounts.
+    ///
+    /// Like [`AlgoOps::call_app`], but `extra_accounts` are placed at the front of the transaction's
+    /// foreign-accounts array (ahead of the app creator, which is always appended). A method may only
+    /// read or write the local state of accounts listed in that array, so pass the account(s) the
+    /// method indexes — e.g. an admin setter that writes a *target* account's local state passes that
+    /// target here.
+    ///
+    /// # Errors
+    ///
+    /// Errors if `app_id` is 0, if any `extra_accounts` entry is not a valid address, or if the call
+    /// fails to build, submit, or confirm.
+    pub fn call_app_with_accounts(
+        &self,
+        app_id: u64,
+        asset_id: Option<u64>,
+        method: Option<&str>,
+        args: &[AppArg],
+        extra_accounts: &[&str],
+    ) -> Result<(String, Vec<Vec<u8>>)> {
+        if app_id == 0 {
+            bail!("app_id must be > 0");
+        }
+        let parsed: Vec<algonaut::core::Address> = extra_accounts
+            .iter()
+            .map(|a| Self::parse_address(a))
+            .collect::<Result<_>>()?;
+        let tx = self.build_call_app_tx_inner(app_id, asset_id, &[], &parsed, method, args)?;
+        algo_log!(
+            "[call_app_with_accounts] method={:?} app_id={} extra_accounts={}",
+            method,
+            app_id,
+            extra_accounts.len()
+        );
+        self.sign_submit_and_fetch_logs(tx)
+    }
+
+    /// Sign `tx` with the ops account, submit it, wait for confirmation, and return the transaction
+    /// id together with its base64-decoded logs. Shared by the `call_app*` entry points.
+    fn sign_submit_and_fetch_logs(
+        &self,
+        tx: algonaut::transaction::transaction::Transaction,
+    ) -> Result<(String, Vec<Vec<u8>>)> {
         let sk = self.private_key_bytes()?;
         let client = self.algod_client()?;
         // Sign, submit, wait
@@ -3671,7 +3717,7 @@ impl AlgoOps {
         method: Option<&str>,
         args: &[AppArg],
     ) -> Result<algonaut::transaction::transaction::Transaction> {
-        self.build_call_app_tx_inner(app_id, asset_id, &[], method, args)
+        self.build_call_app_tx_inner(app_id, asset_id, &[], &[], method, args)
     }
 
     // No in-crate caller: a `test-support`-only escape hatch for downstream tests.
@@ -3685,7 +3731,7 @@ impl AlgoOps {
         method: Option<&str>,
         args: &[AppArg],
     ) -> Result<algonaut::transaction::transaction::Transaction> {
-        self.build_call_app_tx_inner(app_id, asset_id, foreign_app_ids, method, args)
+        self.build_call_app_tx_inner(app_id, asset_id, foreign_app_ids, &[], method, args)
     }
 
     pub fn call_app_with_foreign_app(
@@ -3702,51 +3748,15 @@ impl AlgoOps {
         if foreign_app_id == 0 {
             bail!("foreign_app_id must be > 0");
         }
-        let tx = self.build_call_app_tx_inner(app_id, asset_id, &[foreign_app_id], method, args)?;
+        let tx =
+            self.build_call_app_tx_inner(app_id, asset_id, &[foreign_app_id], &[], method, args)?;
         algo_log!(
             "[call_app_with_foreign_app] method={:?} app_id={} foreign_app_id={}",
             method,
             app_id,
             foreign_app_id
         );
-        let sk = self.private_key_bytes()?;
-        let client = self.algod_client()?;
-        let seed: [u8; 32] = sk
-            .as_slice()
-            .try_into()
-            .map_err(|_| anyhow!("Secret key must be 32 bytes"))?;
-        let account = algonaut::transaction::account::Account::from_seed(seed);
-        let signed_tx = account
-            .sign(tx)
-            .map_err(|e| anyhow!("failed to sign app call transaction: {e}"))?;
-        let signed = signed_tx
-            .to_msg_pack()
-            .map_err(|e| anyhow!("failed to encode signed transaction: {e}"))?;
-        let tx_id = self
-            .algod_call(|| client.send_raw(&signed))
-            .map_err(|e| anyhow!("send_raw failed: {e}"))?
-            .tx_id;
-        self.wait_for_confirmation(&tx_id, 10)?;
-        let tx_id_obj = algonaut::core::TransactionId::from(tx_id.as_str());
-        let p = self
-            .algod_call(|| client.pending_transaction(&tx_id_obj))
-            .map_err(|e| anyhow!("failed to fetch pending transaction info: {e}"))?;
-        let v = serde_json::to_value(&p)
-            .map_err(|e| anyhow!("failed to serialize pending tx info: {e}"))?;
-        let logs_arr = v
-            .get("logs")
-            .and_then(|x| x.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let mut logs: Vec<Vec<u8>> = Vec::new();
-        for l in logs_arr {
-            if let Some(s) = l.as_str()
-                && let Ok(bytes) = general_purpose::STANDARD.decode(s)
-            {
-                logs.push(bytes);
-            }
-        }
-        Ok((tx_id, logs))
+        self.sign_submit_and_fetch_logs(tx)
     }
 
     fn build_call_app_tx_inner(
@@ -3754,6 +3764,7 @@ impl AlgoOps {
         app_id: u64,
         asset_id: Option<u64>,
         foreign_app_ids: &[u64],
+        extra_accounts: &[algonaut::core::Address],
         method: Option<&str>,
         args: &[AppArg],
     ) -> Result<algonaut::transaction::transaction::Transaction> {
@@ -3784,22 +3795,14 @@ impl AlgoOps {
             .algod_call(|| client.suggested_params())
             .map_err(|e| anyhow!("failed to fetch suggested params: {e}"))?;
 
-        let mut accounts: Vec<algonaut::core::Address> = vec![creator];
-        if let Some(sig) = method
-            && (sig == "set_allow_static(address,uint64)void"
-                || sig == "set_allow_relay(address,uint64)void")
-            && let Some(first) = args.first()
-            && let AppArg::Bytes(b) = first
-            && b.len() == 32
-        {
-            let mut pk = [0u8; 32];
-            pk.copy_from_slice(&b[..32]);
-            if let Ok(addr_str) = byte_key_to_address(&pk)
-                && let Ok(target) = Self::parse_address(&addr_str)
-            {
-                accounts.insert(0, target);
-            }
-        }
+        // Foreign accounts array: any caller-supplied accounts first (e.g. the target whose local
+        // state an admin method reads/writes), then the app creator. A method can only touch the
+        // local state of accounts listed here, so a caller passes the accounts its method indexes via
+        // `call_app_with_accounts`; the creator is always appended for methods that reference it.
+        let mut accounts: Vec<algonaut::core::Address> =
+            Vec::with_capacity(extra_accounts.len() + 1);
+        accounts.extend_from_slice(extra_accounts);
+        accounts.push(creator);
         let fapps: Vec<algonaut::core::AppId> = foreign_app_ids
             .iter()
             .map(|&id| algonaut::core::AppId(id))
@@ -4281,6 +4284,7 @@ impl<'a> TransactionGroupBuilder<'a> {
                         *app_id,
                         *foreign_asset,
                         &fapps,
+                        &[],
                         method.as_deref(),
                         args,
                     )?

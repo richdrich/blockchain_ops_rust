@@ -17,6 +17,8 @@ mod algod_reads;
 mod asset_holding;
 #[path = "ops/block_header_seed.rs"]
 mod block_header_seed;
+#[path = "ops/call_app_with_accounts.rs"]
+mod call_app_with_accounts;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
 #[path = "ops/daily_budget.rs"]
