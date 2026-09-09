@@ -9,12 +9,15 @@ name: deploy
 #   2. publish `blockchain_ops`, then `algo_ops`, then `sidewinder_ops` (ordered —
 #      each depends on the one before) via crates.io Trusted Publishing (OpenID
 #      Connect / OIDC), with no stored registry token;
-#   3. tag the released commit `vX.Y.Z`;
-#   4. open a next-patch version-bump PR on `master` so it stays one patch ahead.
+#   3. tag the released commit `vX.Y.Z`.
+#
+# The next-patch version bump that keeps `master` one ahead is done by
+# `scripts/deploy` (a direct, PR-less push after this run succeeds), not here —
+# so a release is one command. See RELEASING.md.
 #
 # One-time setup before the first real deploy is documented in RELEASING.md
-# (manual first publish, Trusted Publishing config, the version-bump GitHub App,
-# and branch protection on `deployed`).
+# (manual first publish, Trusted Publishing config, and branch protection on
+# `deployed`).
 on:
   push:
     branches: [deployed]
@@ -144,55 +147,7 @@ jobs:
             echo "pushed tag ${tag}"
           fi
 
-  # ── Open the next-patch version-bump PR on master (cargo set-version + App) ──
-  bump:
-    name: bump
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      # A GitHub App token (not GITHUB_TOKEN) is used so the bump PR triggers the
-      # required `quality`/`unit` checks and can therefore be merged.
-      - name: Generate version-bump app token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.VERSION_BUMP_APP_ID }}
-          private-key: ${{ secrets.VERSION_BUMP_APP_PRIVATE_KEY }}
-      - uses: actions/checkout@v5
-        with:
-          ref: master
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-edit
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-edit
-      # Eagerly bump both crates to the next patch (kept in lockstep, and the
-      # internal path-dependency requirement with them) so master always sits one
-      # patch ahead of the version just published, then open the PR. Authored by
-      # the App token so the PR triggers the required `quality`/`unit` checks.
-      - name: Open next-patch version-bump PR on master
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          git config user.name "blockchain-ops-release[bot]"
-          git config user.email "blockchain-ops-release[bot]@users.noreply.github.com"
-          cargo set-version --bump patch
-          version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name=="blockchain_ops").version')
-          branch="release/v${version}"
-          # On a re-run the bump branch may already exist — do not open a duplicate.
-          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
-            echo "branch ${branch} already exists — skipping bump PR"
-            exit 0
-          fi
-          git switch -c "${branch}"
-          git commit -am "Bump crates to ${version}"
-          git push -u origin "${branch}"
-          gh pr create --base master --head "${branch}" \
-            --title "Bump crates to ${version}" \
-            --body "Automated post-deploy bump to \`${version}\` (next patch), keeping master one patch ahead of the published release. Opened by deploy.yml."
+  # The post-deploy version bump is no longer a workflow job: `scripts/deploy`
+  # owns the whole release (raise + merge the deploy PR, then bump `master` to the
+  # next patch with a direct, PR-less push). Keeping the bump here too would race
+  # that push and double-bump. See RELEASING.md.

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# scripts/deploy <version> — one-command release to crates.io.
+#
+# Publishes what is currently on `master` (which must already read <version>, so
+# the argument is a safety assertion of exactly what ships), then leaves `master`
+# one patch ahead for the next cycle. In order it:
+#   1. raises (or reuses) the deployment pull request (PR) `master` -> `deployed`,
+#      labelled `localnet` so the required integration check runs;
+#   2. waits for every required check to pass;
+#   3. merges it with `--admin` (the owner cannot self-approve a review gate, and
+#      the checks are already green) — the push to `deployed` triggers deploy.yml;
+#   4. waits for that deploy run (crates.io publish + tag) to succeed;
+#   5. bumps `master` to the next patch and pushes it directly (no PR).
+#
+# Run it as the repo owner, from a clean checkout, with `gh` authenticated. See
+# RELEASING.md for the required repo settings (admin merge on `deployed`, and a
+# direct-push bypass on `master` for step 5).
+#
+# Usage:  scripts/deploy 0.7.8          # deploy 0.7.8, then bump master to 0.7.9
+#         scripts/deploy 0.7.8 --yes    # skip the pre-publish confirmation prompt
+
+set -euo pipefail
+
+die() { echo "deploy: error: $*" >&2; exit 1; }
+step() { echo; echo "==> $*"; }
+
+# ── Arguments ────────────────────────────────────────────────────────────────
+VERSION="${1:-}"
+ASSUME_YES=false
+if [ "${2:-}" = "--yes" ] || [ "${2:-}" = "-y" ]; then ASSUME_YES=true; fi
+
+[ -n "$VERSION" ] || die "usage: scripts/deploy <version> [--yes]   e.g. scripts/deploy 0.7.8"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must be X.Y.Z, got '$VERSION'"
+
+command -v gh >/dev/null || die "the GitHub CLI ('gh') is required"
+command -v jq >/dev/null || die "'jq' is required"
+cargo set-version --help >/dev/null 2>&1 || die "cargo-edit is required: cargo install cargo-edit"
+
+cd "$(git rev-parse --show-toplevel)"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+
+# Read a crate version out of a committed manifest on a given ref.
+version_on() { git show "$1:blockchain_ops/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+
+# ── Preflight: master must be exactly <version>, and ahead of deployed ────────
+step "Fetching latest refs"
+git fetch --quiet origin master deployed
+
+MASTER_VERSION=$(version_on origin/master)
+DEPLOYED_VERSION=$(version_on origin/deployed)
+
+[ "$MASTER_VERSION" = "$VERSION" ] || die \
+  "master is at $MASTER_VERSION, not $VERSION — the deploy publishes exactly what is on master.
+   Set master to $VERSION first, or run: scripts/deploy $MASTER_VERSION"
+[ "$DEPLOYED_VERSION" != "$VERSION" ] || die "deployed is already at $VERSION — nothing to release"
+if git merge-base --is-ancestor origin/master origin/deployed; then
+  die "master is not ahead of deployed — nothing to deploy"
+fi
+
+echo "   deployed $DEPLOYED_VERSION  ->  publishing $VERSION  (from master)"
+
+# ── 1. Raise (or reuse) the deployment PR, labelled for the integration check ─
+step "Opening the deployment PR (master -> deployed)"
+PR=$(gh pr list --repo "$REPO" --base deployed --head master --state open --json number --jq '.[0].number // empty')
+if [ -n "$PR" ]; then
+  echo "   Reusing open deployment PR #$PR"
+else
+  gh pr create --repo "$REPO" --base deployed --head master \
+    --title "Deploy v$VERSION to crates.io" \
+    --body "Automated deployment via \`scripts/deploy $VERSION\`. Merging publishes $VERSION to crates.io." \
+    >/dev/null
+  PR=$(gh pr list --repo "$REPO" --base deployed --head master --state open --json number --jq '.[0].number')
+  echo "   Opened deployment PR #$PR"
+fi
+# The integration check only runs on a deploy PR that carries the `localnet` label.
+gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=localnet' >/dev/null
+echo "   Labelled #$PR 'localnet' (triggers the integration check)"
+
+# ── 2. Wait for all required checks to pass ──────────────────────────────────
+step "Waiting for checks on #$PR (this runs the localnet integration bucket)"
+sleep 10 # let the label-triggered runs register before watching
+gh pr checks "$PR" --repo "$REPO" --watch --fail-fast \
+  || die "checks failed on #$PR — not merging (fix master, then re-run)"
+
+# ── 3. Merge (point of no return: this publishes to crates.io) ────────────────
+if [ "$ASSUME_YES" != true ]; then
+  echo
+  read -r -p "Checks are green. Merge #$PR and publish $VERSION to crates.io? [y/N] " reply
+  [[ "$reply" =~ ^[Yy]$ ]] || die "aborted before publish (PR #$PR left open)"
+fi
+step "Merging deployment PR #$PR"
+# --admin: the owner cannot approve their own PR, and checks are already green.
+gh pr merge "$PR" --repo "$REPO" --merge --admin
+
+# ── 4. Wait for the deploy workflow (publish + tag) to succeed ────────────────
+step "Waiting for the deploy workflow (crates.io publish + tag)"
+git fetch --quiet origin deployed
+DEPLOY_SHA=$(git rev-parse origin/deployed)
+RUN_ID=""
+for _ in $(seq 1 60); do
+  RUN_ID=$(gh run list --repo "$REPO" --workflow deploy.yml --branch deployed \
+    --json databaseId,headSha --jq "[.[] | select(.headSha==\"$DEPLOY_SHA\")][0].databaseId // empty")
+  [ -n "$RUN_ID" ] && break
+  sleep 5
+done
+[ -n "$RUN_ID" ] || die "could not find the deploy run for $DEPLOY_SHA — check the Actions tab"
+gh run watch "$RUN_ID" --repo "$REPO" --exit-status \
+  || die "deploy run $RUN_ID failed — v$VERSION may be partially published; not bumping master"
+echo "   v$VERSION published and tagged (run $RUN_ID)"
+
+# ── 5. Bump master to the next patch, pushed directly (no PR) ─────────────────
+NEXT=$(awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}' <<<"$VERSION")
+step "Bumping master $VERSION -> $NEXT (direct push, no PR)"
+WT=$(mktemp -d)
+# Isolated detached worktree so the bump never disturbs the current checkout.
+git worktree add --quiet --detach "$WT" origin/master
+(
+  cd "$WT"
+  cargo set-version "$NEXT" >/dev/null       # all workspace crates + internal deps (and Cargo.lock), in lockstep
+  git commit --quiet -am "Bump crates to $NEXT"
+  git push origin "HEAD:master"
+)
+git worktree remove --force "$WT"
+
+echo
+echo "Done. Released v$VERSION to crates.io; master is now at $NEXT."

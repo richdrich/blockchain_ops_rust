@@ -21,6 +21,8 @@ mod asset_configured_creator_localnet;
 mod asset_manager_creator_localnet;
 #[path = "ops/dapp_app_integration_localnet.rs"]
 mod dapp_app_integration_localnet;
+#[path = "ops/fetch_opted_in_accounts_cached_localnet.rs"]
+mod fetch_opted_in_accounts_cached_localnet;
 #[path = "ops/fetch_transactions_cached_localnet.rs"]
 mod fetch_transactions_cached_localnet;
 #[path = "ops/find_transaction_by_note_and_sender_localnet.rs"]
