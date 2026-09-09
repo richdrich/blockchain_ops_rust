@@ -17,6 +17,8 @@ mod algod_reads;
 mod asset_holding;
 #[path = "ops/block_header_seed.rs"]
 mod block_header_seed;
+#[path = "ops/call_app_with_accounts.rs"]
+mod call_app_with_accounts;
 #[path = "ops/change_reserve.rs"]
 mod change_reserve;
 #[path = "ops/daily_budget.rs"]
@@ -37,6 +39,8 @@ mod generate_keypair;
 mod node_errors;
 #[path = "ops/rate_limit.rs"]
 mod rate_limit;
+#[path = "ops/required_extra_pages.rs"]
+mod required_extra_pages;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]
