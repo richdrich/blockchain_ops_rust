@@ -607,3 +607,51 @@ fn incremental_refresh_rereads_a_foreign_account_set_by_an_admin() {
         vec![("MEMBER".to_string(), acct("MEMBER", "bit", "1"))]
     );
 }
+
+#[test]
+fn clear_resets_entries_and_watermark() {
+    // `clear` drops the accumulated entries and both watermark fields, so the cache is
+    // indistinguishable from a fresh `new()` — the next `Refresh` re-bootstraps with a full scan.
+    let mut cache = AccountScanCache {
+        last_round: 42,
+        last_updated: 1_000,
+        entries: vec![("A".to_string(), acct("A", "bit", "1"))],
+    };
+
+    cache.clear();
+
+    assert_eq!(cache.last_round, 0);
+    assert_eq!(cache.last_updated, 0);
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache, AccountScanCache::<ScannedAccount>::new());
+}
+
+#[test]
+fn refresh_after_clear_does_a_full_scan() {
+    // Because `clear` zeroes the watermark, a subsequent `Refresh` takes the full-scan (bootstrap)
+    // path rather than the incremental one — the same behaviour a `new()` cache gets.
+    let cache = Mutex::new(AccountScanCache {
+        last_round: 42,
+        last_updated: 1_000,
+        entries: vec![("STALE".to_string(), acct("STALE", "bit", "1"))],
+    });
+    cache.lock().unwrap().clear();
+
+    let stub = StubIndexer::new(
+        vec![full_page(vec![acct("FRESH", "bit", "1")], None, 50)],
+        vec![],
+        vec![],
+    );
+    run(&cache, QueryMode::Refresh, None, 2_000, &stub, keep_all);
+
+    // A full-scan page was fetched (bootstrap), no incremental change-discovery, and the stale entry
+    // is gone — replaced by the freshly scanned set.
+    assert_eq!(stub.full_calls.borrow().len(), 1);
+    assert!(stub.changed_calls.borrow().is_empty());
+    let cache = cache.lock().unwrap();
+    assert_eq!(
+        cache.entries,
+        vec![("FRESH".to_string(), acct("FRESH", "bit", "1"))]
+    );
+    assert_eq!(cache.last_round, 50);
+}

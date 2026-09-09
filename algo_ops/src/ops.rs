@@ -470,6 +470,15 @@ impl<T> AccountScanCache<T> {
             entries: Vec::new(),
         }
     }
+
+    /// Reset the cache to its empty state — drops the accumulated entries and clears the watermark
+    /// (`last_round` / `last_updated`) so the next [`QueryMode::Refresh`] re-bootstraps with a full
+    /// scan. Equivalent to overwriting with [`AccountScanCache::new`], but as a method a caller can
+    /// invoke through a lock guard without naming the field set (so the reset invariant lives with the
+    /// type that owns it rather than being re-derived at each call site).
+    pub fn clear(&mut self) {
+        *self = AccountScanCache::new();
+    }
 }
 
 impl<T> Default for AccountScanCache<T> {
