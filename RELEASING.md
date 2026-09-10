@@ -25,9 +25,10 @@ order:
 3. **Merges it** with `--admin` (the owner cannot self-approve a review gate, and
    the checks are already green). The push to `deployed` triggers
    [`deploy.yml`](.github/workflows/deploy.yml), which re-runs every gate, then
-   publishes `blockchain_ops`, `algo_ops`, then `sidewinder_ops` to crates.io via
-   Trusted Publishing (OpenID Connect / OIDC — no stored registry token; each is
-   published before the crates that depend on it), and tags the commit `vX.Y.Z`.
+   publishes `blockchain_ops`, `algo_ops`, `sw_identity_tls`, then `sidewinder_ops`
+   to crates.io via Trusted Publishing (OpenID Connect / OIDC — no stored registry
+   token; each is published before the crates that depend on it), and tags the
+   commit `vX.Y.Z`.
 4. **Waits for that deploy run to succeed**, then **bumps `master` to the next
    patch** (`cargo set-version`, all crates in lockstep) and pushes it **directly,
    with no PR**, so `master` is ready for the following deploy.
@@ -69,8 +70,20 @@ manual, after which continuous integration (CI) is token-free.
    published, so it needs its own one-time manual publish (of the current
    `master` version) before the deploy job can publish it via OIDC.
 
+   **`sw_identity_tls`** was added the same way and also needs this one-time
+   bootstrap. It depends on `algo_ops`, so that dependency must be on crates.io at
+   a version its requirement accepts before the manual publish resolves — publish
+   `algo_ops` first (as above), then:
+
+   ```
+   cargo publish -p sw_identity_tls
+   ```
+
+   Then configure Trusted Publishing for it (below). After that the deploy job
+   publishes it via OIDC, in order after `algo_ops` and before `sidewinder_ops`.
+
 2. **Configure Trusted Publishing** for each crate on crates.io — `blockchain_ops`,
-   `algo_ops`, and `sidewinder_ops` (crate → Settings → Trusted Publishing):
+   `algo_ops`, `sw_identity_tls`, and `sidewinder_ops` (crate → Settings → Trusted Publishing):
    GitHub repository `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After
    this the deploy job authenticates via OIDC and no registry token is ever stored.
 
