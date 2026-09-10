@@ -1,0 +1,57 @@
+[package]
+name = "sw_identity_tls"
+version = "0.8.1"
+edition = "2024"
+description = "Identity-bound TLS for Sidewinder access: a self-signed certificate whose ephemeral leaf key is signed by an Algorand Ed25519 identity, verified peer-side against an on-chain membership set, plus the endpoint-discovery codec. Shared by the Sidewinder node/server side and the sidewinder_ops client."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/richdrich/blockchain_ops_rust"
+homepage = "https://github.com/richdrich/blockchain_ops_rust"
+documentation = "https://docs.rs/sw_identity_tls"
+readme = "README.md"
+keywords = ["sidewinder", "tls", "algorand", "identity", "web3"]
+categories = ["cryptography::cryptocurrencies", "authentication"]
+# Test targets are declared explicitly below (per project guidelines), so disable auto-discovery.
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+# `server` compiles the server side (client-cert verifier + ServerConfig builder). A pure API client
+# (e.g. sidewinder_ops connecting to a node) builds with `default-features = false` to take only the
+# client side. On by default so nodes and the full test suite get the whole surface.
+default = ["server"]
+server = []
+
+[dependencies]
+# the TLS stack; the ring crypto provider is selected explicitly (not aws-lc-rs) to avoid a C toolchain
+# build dependency, and the custom peer verifiers implement rustls's danger verifier traits.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# generate the self-signed leaf certificate and attach the identity-binding custom X.509 extension; the
+# ring feature provides the ECDSA P-256 keygen for the ephemeral leaf key.
+rcgen = { version = "0.13", features = ["ring"] }
+# parse a presented peer certificate to extract its SubjectPublicKeyInfo and the identity extension in
+# the verifier path.
+x509-parser = "0.16"
+# DER-encode and DER-decode the SignedKey structure (identity public key + signature) in the extension.
+yasna = "0.5"
+# sign the leaf key with, and verify it against, the Algorand identity's Ed25519 key.
+ed25519-dalek = "2"
+# the sanctioned Algorand access wrapper (this workspace): the address codec (byte_key_to_address) and,
+# for the endpoint resolver, the incremental cached opted-in-accounts scan (fetch_opted_in_accounts_cached).
+algo_ops = { path = "../algo_ops", version = "0.8.1" }
+# base64-wrap the compact endpoint record for on-chain storage (#372) so the opted-in scan's string
+# decode of the byte-slice is unambiguous UTF-8.
+base64 = "0.22"
+# ergonomic error propagation across the rcgen / x509 / asn1 / address / scan boundaries.
+anyhow = "1"
+
+[dev-dependencies]
+# construct signing keys and drive an in-memory TLS handshake in the offline tests.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# a deterministic RNG seed source for the test signing keys (no OS entropy dependency in tests).
+rand = "0.8"
+
+[[test]]
+name = "unit"
+path = "tests/unit.rs"
