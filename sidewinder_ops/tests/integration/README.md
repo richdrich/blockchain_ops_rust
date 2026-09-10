@@ -21,6 +21,7 @@ SIDEWINDER_NODES=http://localhost:9101,http://localhost:9102 SIDEWINDER_TOKEN=de
 | `SIDEWINDER_ACCOUNT_MNEMONIC` | yes | 25-word Algorand mnemonic for an **enrolled** caller; its key signs the transaction and must be in the nest's allowlist. |
 | `SIDEWINDER_TOKEN` | no | Bearer token every node accepts. Defaults to empty (a nest with auth disabled). |
 | `SIDEWINDER_SLOT_SET_TYPE` | no | Transaction type bound to `Slot.set` in the nest's `application.yaml`. Defaults to `2`. |
+| `SIDEWINDER_DISCOVERY_APP_ID` | discovery test | Membership application id for the discovery + mutual-TLS test (`discovery_e2e`): resolve the app's live cluster-node endpoints and connect to one pinning its identity. With `SIDEWINDER_ACCOUNT_MNEMONIC` (whose key is the client's TLS identity) it resolves-then-connects over mutual TLS; the parent chain defaults to localnet. Unset, that test skips. |
 
 With none of these set the test prints a skip message and passes.
 
