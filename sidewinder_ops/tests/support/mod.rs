@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod mock_node;
+pub mod tls_mock_node;
 
 use algo_ops::AlgoOps;
 use sidewinder_ops::{SidewinderClient, SidewinderConfig};

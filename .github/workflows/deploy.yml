@@ -6,9 +6,9 @@ name: deploy
 # deployment pull request (PR), `master` -> `deployed`, is merged. The flow:
 #   1. re-run every gate (fast checks, unit tests, and the localnet integration
 #      bucket) so nothing ships unless all are green;
-#   2. publish `blockchain_ops`, then `algo_ops`, then `sidewinder_ops` (ordered —
-#      each depends on the one before) via crates.io Trusted Publishing (OpenID
-#      Connect / OIDC), with no stored registry token;
+#   2. publish `blockchain_ops`, `algo_ops`, `sw_identity_tls`, then
+#      `sidewinder_ops` (ordered — each depends on the ones before) via crates.io
+#      Trusted Publishing (OpenID Connect / OIDC), with no stored registry token;
 #   3. tag the released commit `vX.Y.Z`.
 #
 # The next-patch version bump that keeps `master` one ahead is done by
@@ -102,8 +102,9 @@ jobs:
       # Publish each dependency before its dependents. `already-published` is
       # tolerated so a re-run after a partial failure is safe. cargo waits for
       # the crate to appear in the index before returning, so the ordered publish
-      # resolves correctly: blockchain_ops <- algo_ops <- sidewinder_ops.
-      - name: Publish blockchain_ops, algo_ops, then sidewinder_ops
+      # resolves correctly: blockchain_ops <- algo_ops <- sw_identity_tls, and
+      # algo_ops <- sidewinder_ops.
+      - name: Publish blockchain_ops, algo_ops, sw_identity_tls, then sidewinder_ops
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -120,6 +121,7 @@ jobs:
           }
           publish_one blockchain_ops
           publish_one algo_ops
+          publish_one sw_identity_tls
           publish_one sidewinder_ops
 
   # ── Tag the released commit vX.Y.Z (idempotent) ─────────────────────────────

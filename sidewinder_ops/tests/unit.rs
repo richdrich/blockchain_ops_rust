@@ -12,6 +12,8 @@ mod support;
 mod health;
 #[path = "client/misc.rs"]
 mod misc;
+#[path = "client/mtls.rs"]
+mod mtls;
 #[path = "client/node_status.rs"]
 mod node_status;
 #[path = "client/operations.rs"]
