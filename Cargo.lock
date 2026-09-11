@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "algo_ops"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "algo_ops",
  "algonaut",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "blockchain_ops"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -2312,7 +2312,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidewinder_ops"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "algo_ops",
  "anyhow",
@@ -2415,7 +2415,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sw_identity_tls"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "algo_ops",
  "anyhow",

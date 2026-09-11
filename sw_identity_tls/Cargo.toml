@@ -1,6 +1,6 @@
 [package]
 name = "sw_identity_tls"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2024"
 description = "Identity-bound TLS for Sidewinder access: a self-signed certificate whose ephemeral leaf key is signed by an Algorand Ed25519 identity, verified peer-side against an on-chain membership set, plus the endpoint-discovery codec. Shared by the Sidewinder node/server side and the sidewinder_ops client."
 license = "MIT OR Apache-2.0"
@@ -39,7 +39,7 @@ yasna = "0.5"
 ed25519-dalek = "2"
 # the sanctioned Algorand access wrapper (this workspace): the address codec (byte_key_to_address) and,
 # for the endpoint resolver, the incremental cached opted-in-accounts scan (fetch_opted_in_accounts_cached).
-algo_ops = { path = "../algo_ops", version = "0.8.3" }
+algo_ops = { path = "../algo_ops", version = "0.8.4" }
 # base64-wrap the compact endpoint record for on-chain storage (#372) so the opted-in scan's string
 # decode of the byte-slice is unambiguous UTF-8.
 base64 = "0.22"

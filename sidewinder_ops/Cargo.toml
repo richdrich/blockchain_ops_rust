@@ -1,6 +1,6 @@
 [package]
 name = "sidewinder_ops"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2024"
 description = "Client for a Sidewinder sidechain node, built on the algo_ops parent-chain handle."
 license = "MIT OR Apache-2.0"
@@ -18,7 +18,7 @@ autotests = false
 # `version` is required to publish to crates.io: the path is used in-workspace,
 # the version when resolving the published crate. Kept in lockstep with the
 # other workspace crates (all bumped together by `cargo set-version`).
-algo_ops = { path = "../algo_ops", version = "0.8.3" }
+algo_ops = { path = "../algo_ops", version = "0.8.4" }
 anyhow = "1"
 base64 = "0.22"
 # Async HTTP client; driven synchronously through a per-call Tokio runtime (see
@@ -40,7 +40,7 @@ tracing = "0.1"
 # identity-bound TLS + endpoint-discovery codec for authenticated access (Sidewinder #240/#375): the
 # client subset (`generate` + `IdentityServerVerifier` + `client_config`) and `EndpointResolver`. The
 # `server` default feature is dropped — a client never needs the server-side verifier.
-sw_identity_tls = { path = "../sw_identity_tls", version = "0.8.3", default-features = false }
+sw_identity_tls = { path = "../sw_identity_tls", version = "0.8.4", default-features = false }
 # construct this account's Ed25519 identity `SigningKey` (from `AlgoOps::private_key_bytes`) to bind the
 # client's mutual-TLS certificate; the same key type `sw_identity_tls::generate` signs the leaf with.
 ed25519-dalek = "2"
@@ -59,7 +59,7 @@ sha2 = "0.10"
 # the offline mutual-TLS test stands up a loopback node server presenting an identity certificate, so it
 # needs `sw_identity_tls`'s server side (`server_config` + `IdentityClientVerifier`); the server uses a
 # blocking `rustls::ServerConnection`, so no async TLS runtime is required.
-sw_identity_tls = { path = "../sw_identity_tls", version = "0.8.3", features = ["server"] }
+sw_identity_tls = { path = "../sw_identity_tls", version = "0.8.4", features = ["server"] }
 
 [lints]
 workspace = true
