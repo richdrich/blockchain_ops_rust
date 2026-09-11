@@ -17,6 +17,7 @@
 
 mod client;
 mod config;
+mod discovery;
 mod error;
 mod transaction;
 mod types;
@@ -24,9 +25,12 @@ mod types;
 // Re-exported so a caller can build transaction arguments as `sidewinder_ops::AppArg` without a
 // second `use algo_ops::AppArg;` — the argument packing is shared with algo_ops, not reimplemented.
 pub use algo_ops::AppArg;
+// Re-exported so a caller reading a `DiscoveredNode`'s endpoint needs only this crate.
 pub use client::{SidewinderClient, SidewinderOps};
 pub use config::SidewinderConfig;
+pub use discovery::{DiscoveredNode, DiscoveryConfig, pinned_client_config, resolve_nodes};
 pub use error::{SidewinderError, SidewinderErrorKind};
+pub use sw_identity_tls::EndpointRecord;
 pub use transaction::{SignedTransaction, TransactionRequest};
 pub use types::{
     Disposition, Event, EventSchema, NodeStatus, OperationSchema, PendingTransaction, Stage,

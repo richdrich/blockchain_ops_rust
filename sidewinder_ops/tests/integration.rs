@@ -12,3 +12,6 @@ mod support;
 
 #[path = "integration/slot_e2e.rs"]
 mod slot_e2e;
+
+#[path = "integration/discovery_e2e.rs"]
+mod discovery_e2e;

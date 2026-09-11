@@ -15,8 +15,12 @@ use crate::types::{
 use algo_ops::AlgoOps;
 use anyhow::{Result, anyhow};
 use reqwest::Method;
+use rustls::ClientConfig;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::discovery::{DiscoveredNode, DiscoveryConfig, identity_key, pinned_client_config};
 
 /// The client-facing surface of a Sidewinder node.
 ///
@@ -53,9 +57,17 @@ pub trait SidewinderOps {
 }
 
 /// A client for one Sidewinder node, built on an [`AlgoOps`] parent-chain handle plus endpoint config.
+///
+/// Two transports: the default plaintext-plus-bearer surface ([`from_algo_ops`](Self::from_algo_ops)),
+/// and identity-bound **mutual TLS** ([`connect`](Self::connect) / [`mtls`](Self::mtls)) where the node
+/// is authenticated by its on-chain identity and the bearer token is not used.
 pub struct SidewinderClient {
     algo: AlgoOps,
     config: SidewinderConfig,
+    // `Some` selects the mutual-TLS transport: reqwest is built with this preconfigured client config
+    // (which pins the node's identity and presents ours) and no bearer token is sent. `None` is the
+    // default plaintext + bearer surface, byte-for-byte as before.
+    tls: Option<Arc<ClientConfig>>,
 }
 
 // Number of retries and backoff base for unreachable-host errors — mirrors the algo_ops policy.
@@ -64,8 +76,65 @@ const RETRY_BASE_MS: u64 = 1_000;
 
 impl SidewinderClient {
     /// Build a client from an Algorand operations handle (which signs transactions) and endpoint config.
+    /// The default plaintext transport: requests carry the config's bearer token.
     pub fn from_algo_ops(algo: AlgoOps, config: SidewinderConfig) -> Self {
-        Self { algo, config }
+        Self {
+            algo,
+            config,
+            tls: None,
+        }
+    }
+
+    /// Build a mutual-TLS client for a node at `base_url` (an `https://` URL), using `tls` to
+    /// authenticate the node by its Algorand identity and present this client's own identity
+    /// certificate. No bearer token is sent — mutual TLS is the authentication. Prefer
+    /// [`connect`](Self::connect), which discovers the endpoint and pins the identity for you.
+    pub fn mtls(algo: AlgoOps, base_url: impl Into<String>, tls: Arc<ClientConfig>) -> Self {
+        Self {
+            algo,
+            // the bearer token is unused on the mutual-TLS transport; keep an empty one.
+            config: SidewinderConfig::new(base_url, String::new()),
+            tls: Some(tls),
+        }
+    }
+
+    /// Discover `node`'s endpoint (already resolved from the app id) and connect to it over identity-bound
+    /// mutual TLS, pinning `node.identity`: the node must present a certificate bound to that Algorand
+    /// identity or the handshake fails. This client presents its own identity (this account's key), so a
+    /// node running inbound-client mutual TLS authorizes it as a client. Errors if `node` published no
+    /// reachable address, or the client identity/TLS config cannot be built.
+    pub fn connect(algo: AlgoOps, node: &DiscoveredNode) -> Result<Self> {
+        let base_url = node.base_url().ok_or_else(|| {
+            anyhow!(
+                "resolved node {} published no reachable endpoint",
+                node.identity
+            )
+        })?;
+        let own = identity_key(&algo)?;
+        let tls = pinned_client_config(&own, &node.identity)?;
+        Ok(Self::mtls(algo, base_url, Arc::new(tls)))
+    }
+
+    /// Discover the permitted cluster nodes of `cfg.app_id` and connect to the first one that published a
+    /// reachable endpoint, over identity-pinned mutual TLS ([`connect`](Self::connect)). Returns the
+    /// connected client and the [`DiscoveredNode`] it bound to (so a caller can re-resolve later and
+    /// reconnect if the node rotates its endpoint). Errors if no permitted node has published an endpoint.
+    pub fn resolve_and_connect(
+        algo: AlgoOps,
+        cfg: &DiscoveryConfig,
+    ) -> Result<(Self, DiscoveredNode)> {
+        let nodes = crate::discovery::resolve_nodes(&algo, cfg)?;
+        let node = nodes
+            .into_iter()
+            .find(|node| node.base_url().is_some())
+            .ok_or_else(|| {
+                anyhow!(
+                    "no permitted cluster node of app {} has published a reachable endpoint",
+                    cfg.app_id
+                )
+            })?;
+        let client = Self::connect(algo, &node)?;
+        Ok((client, node))
     }
 
     /// The underlying Algorand operations handle (the enrolled parent-chain account).
@@ -144,12 +213,20 @@ impl SidewinderClient {
     ) -> Result<(u16, Vec<u8>)> {
         let url = self.url(path);
         let token = self.config.token.clone();
+        let tls = self.tls.clone();
         let fut = async move {
-            let client = reqwest::Client::builder()
+            let mut builder = reqwest::Client::builder();
+            if let Some(tls) = &tls {
+                // mutual-TLS transport: hand reqwest the preconfigured config (node-identity pinning +
+                // our client certificate); the node authenticates us at the handshake, not via a token.
+                builder = builder.tls_backend_preconfigured((**tls).clone());
+            }
+            let client = builder
                 .build()
                 .map_err(|e| anyhow!("failed to build HTTP client: {e}"))?;
             let mut req = client.request(method, &url);
-            if authenticated {
+            // bearer auth applies only to the plaintext transport; mutual TLS is the authentication.
+            if authenticated && tls.is_none() {
                 req = req.bearer_auth(&token);
             }
             if let Some(bytes) = body {
