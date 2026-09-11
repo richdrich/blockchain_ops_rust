@@ -87,3 +87,36 @@ fn a_node_that_does_not_authorize_the_client_rejects_it() {
         "a node that does not authorize the client's identity must reject the connection"
     );
 }
+
+#[test]
+fn connect_pinned_reaches_a_node_by_url_and_raw_gets() {
+    // the URL + identity path (no discovery) that the sidewinder-health CLI uses.
+    let client_addr = identity_address(&client_key());
+    let node_key = SigningKey::from_bytes(&[200u8; 32]);
+    let node_addr = identity_address(&node_key);
+    let node = TlsMockNode::start(&node_key, vec![client_addr]);
+
+    let client = SidewinderClient::connect_pinned(client_algo(), node.base_url(), &node_addr)
+        .expect("connect_pinned");
+    let (status, _body) = client.get("/health").expect("raw get over mutual TLS");
+    assert_eq!(
+        status, 200,
+        "reaches a node's raw endpoint over identity-pinned mutual TLS, addressed by URL"
+    );
+}
+
+#[test]
+fn connect_pinned_rejects_a_mismatched_node_identity() {
+    let client_addr = identity_address(&client_key());
+    let node_key = SigningKey::from_bytes(&[200u8; 32]);
+    // pin a different identity than the node presents.
+    let wrong = identity_address(&SigningKey::from_bytes(&[201u8; 32]));
+    let node = TlsMockNode::start(&node_key, vec![client_addr]);
+
+    let client = SidewinderClient::connect_pinned(client_algo(), node.base_url(), &wrong)
+        .expect("client builds");
+    assert!(
+        client.get("/health").is_err(),
+        "a node whose identity does not match the pinned one is rejected at the handshake"
+    );
+}
