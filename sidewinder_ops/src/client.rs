@@ -115,6 +115,22 @@ impl SidewinderClient {
         Ok(Self::mtls(algo, base_url, Arc::new(tls)))
     }
 
+    /// Connect to a node at a **known** `base_url` (an `https://` URL) over identity-bound mutual TLS,
+    /// pinning `node_identity` (an Algorand address): the node must present a certificate bound to that
+    /// identity or the handshake fails. Unlike [`connect`](Self::connect) this needs no discovery scan —
+    /// the caller already knows where the node is and who it is (e.g. a health probe reading the cluster
+    /// allowlist), so it makes **no** parent-chain call. This client presents its own identity (this
+    /// account's key). Errors if the client identity or TLS config cannot be built.
+    pub fn connect_pinned(
+        algo: AlgoOps,
+        base_url: impl Into<String>,
+        node_identity: &str,
+    ) -> Result<Self> {
+        let own = identity_key(&algo)?;
+        let tls = pinned_client_config(&own, node_identity)?;
+        Ok(Self::mtls(algo, base_url, Arc::new(tls)))
+    }
+
     /// Discover the permitted cluster nodes of `cfg.app_id` and connect to the first one that published a
     /// reachable endpoint, over identity-pinned mutual TLS ([`connect`](Self::connect)). Returns the
     /// connected client and the [`DiscoveredNode`] it bound to (so a caller can re-resolve later and
@@ -135,6 +151,16 @@ impl SidewinderClient {
             })?;
         let client = Self::connect(algo, &node)?;
         Ok((client, node))
+    }
+
+    /// Perform a raw authenticated `GET` of `path`, returning the served `(HTTP status, body bytes)`.
+    /// Over the mutual-TLS transport the node authenticates this client at the handshake; over the
+    /// default transport the bearer token is sent. Only a network-level failure (an unreachable node or
+    /// a failed handshake) is an `Err` — any served HTTP status (including 4xx/5xx) returns `Ok`, so a
+    /// caller can inspect the code. Useful for an endpoint without a typed method, such as the raw
+    /// `/v2/status` JSON a cluster health check parses.
+    pub fn get(&self, path: &str) -> Result<(u16, Vec<u8>)> {
+        self.send("get", Method::GET, path, None, true, None)
     }
 
     /// The underlying Algorand operations handle (the enrolled parent-chain account).

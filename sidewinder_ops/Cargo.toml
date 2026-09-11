@@ -84,3 +84,10 @@ name = "integration"
 path = "tests/integration.rs"
 # Excluded from the default `cargo test`; opt in with `cargo test --test integration`.
 test = false
+
+# ── Binaries ─────────────────────────────────────────────────────────────────
+# `sidewinder-health`: an authenticated mutual-TLS probe of a node's client API, for a cluster running
+# in on-chain-identity auth (the Sidewinder deploy's health check consumes it). See the binary's docs.
+[[bin]]
+name = "sidewinder-health"
+path = "src/bin/sidewinder-health.rs"
