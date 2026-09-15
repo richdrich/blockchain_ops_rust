@@ -3436,8 +3436,8 @@ impl AlgoOps {
     /// Like [`deploy_app`](Self::deploy_app), but reserves at least `reserve_extra_pages` *extra*
     /// program pages at create time so the app can later be updated with a larger program without
     /// migrating (`extra_program_pages` is immutable after create). The actual count is
-    /// `max(required_to_fit, reserve_extra_pages)`, clamped to `MAX_EXTRA_PROGRAM_PAGES`
-    /// (see [`extra_pages_for`](Self::extra_pages_for)). Each reserved page adds 0.1 ALGO to the
+    /// `max(required_to_fit, reserve_extra_pages)`, clamped to Algorand's maximum of 3 extra pages
+    /// (via the `extra_pages_for` helper). Each reserved page adds 0.1 ALGO to the
     /// creator's minimum balance for the life of the app. `reserve_extra_pages = 0` is identical to
     /// [`deploy_app`](Self::deploy_app).
     #[allow(clippy::too_many_arguments)]
