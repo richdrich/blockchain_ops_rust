@@ -44,6 +44,9 @@ mod required_extra_pages;
 
 #[path = "ops/extra_pages_for.rs"]
 mod extra_pages_for;
+
+#[path = "ops/app_asset_param_reads.rs"]
+mod app_asset_param_reads;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]

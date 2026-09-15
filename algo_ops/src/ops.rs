@@ -3240,6 +3240,64 @@ impl AlgoOps {
         0
     }
 
+    /// The creator address of `app_id` from its on-chain application parameters. Errors if the app
+    /// does not exist / cannot be read.
+    pub fn app_creator(&self, app_id: u64) -> Result<String> {
+        if app_id == 0 {
+            bail!("app_id must be > 0");
+        }
+        let client = self.algod_client()?;
+        let app_info = self
+            .algod_call(|| client.app(algonaut::core::AppId(app_id)))
+            .map_err(|e| anyhow!("failed to fetch application {app_id} info: {e}"))?;
+        let v = serde_json::to_value(&app_info)
+            .map_err(|e| anyhow!("failed to serialize application info: {e}"))?;
+        Self::parse_app_creator_from_app_info_value(&v)
+            .ok_or_else(|| anyhow!("application {app_id} info did not contain a creator field"))
+    }
+
+    /// The clawback address of `asset_id` from its on-chain asset parameters, or `None` when no
+    /// clawback is set (absent, empty, or the zero address). Errors if the asset cannot be read.
+    pub fn asset_clawback(&self, asset_id: u64) -> Result<Option<String>> {
+        if asset_id == 0 {
+            bail!("asset_id must be > 0");
+        }
+        let client = self.algod_client()?;
+        let asset_info = self
+            .algod_call(|| client.asset(algonaut::core::AssetId(asset_id)))
+            .map_err(|e| anyhow!("failed to fetch asset {asset_id} info: {e}"))?;
+        let v = serde_json::to_value(&asset_info)
+            .map_err(|e| anyhow!("failed to serialize asset info: {e}"))?;
+        Ok(Self::parse_clawback_from_asset_info_value(&v))
+    }
+
+    /// Extract the creator address from an application_information JSON value (`params.creator`, or a
+    /// top-level `creator`). `None` if absent. Pure, so it is unit-tested without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_app_creator_from_app_info_value(v: &serde_json::Value) -> Option<String> {
+        v.get("params")
+            .and_then(|p| p.get("creator").and_then(|x| x.as_str()))
+            .or_else(|| v.get("creator").and_then(|x| x.as_str()))
+            .map(|s| s.to_string())
+    }
+
+    /// Extract the clawback address from an asset_information JSON value (`params.clawback`). Returns
+    /// `None` when the field is absent or empty — algod omits an unset clawback (`omitempty`), so an
+    /// asset with no clawback yields `None`. A caller that needs to reject the all-zero address treats
+    /// it as "not the expected controller" by comparison. Pure, so it is unit-tested without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_clawback_from_asset_info_value(v: &serde_json::Value) -> Option<String> {
+        v.get("params")
+            .and_then(|p| {
+                p.get("clawback")
+                    .or_else(|| p.get("clawback-address"))
+                    .or_else(|| p.get("clawback_address"))
+                    .and_then(|x| x.as_str())
+            })
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+
     /// Transfer the entire reserve balance of an ASA to the creator. The caller must control the reserve address.
     pub fn recover_reserve_balance(&self, asset_id: u64) -> Result<()> {
         if asset_id == 0 {
