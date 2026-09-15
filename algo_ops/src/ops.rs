@@ -3240,6 +3240,64 @@ impl AlgoOps {
         0
     }
 
+    /// The creator address of `app_id` from its on-chain application parameters. Errors if the app
+    /// does not exist / cannot be read.
+    pub fn app_creator(&self, app_id: u64) -> Result<String> {
+        if app_id == 0 {
+            bail!("app_id must be > 0");
+        }
+        let client = self.algod_client()?;
+        let app_info = self
+            .algod_call(|| client.app(algonaut::core::AppId(app_id)))
+            .map_err(|e| anyhow!("failed to fetch application {app_id} info: {e}"))?;
+        let v = serde_json::to_value(&app_info)
+            .map_err(|e| anyhow!("failed to serialize application info: {e}"))?;
+        Self::parse_app_creator_from_app_info_value(&v)
+            .ok_or_else(|| anyhow!("application {app_id} info did not contain a creator field"))
+    }
+
+    /// The clawback address of `asset_id` from its on-chain asset parameters, or `None` when no
+    /// clawback is set (absent, empty, or the zero address). Errors if the asset cannot be read.
+    pub fn asset_clawback(&self, asset_id: u64) -> Result<Option<String>> {
+        if asset_id == 0 {
+            bail!("asset_id must be > 0");
+        }
+        let client = self.algod_client()?;
+        let asset_info = self
+            .algod_call(|| client.asset(algonaut::core::AssetId(asset_id)))
+            .map_err(|e| anyhow!("failed to fetch asset {asset_id} info: {e}"))?;
+        let v = serde_json::to_value(&asset_info)
+            .map_err(|e| anyhow!("failed to serialize asset info: {e}"))?;
+        Ok(Self::parse_clawback_from_asset_info_value(&v))
+    }
+
+    /// Extract the creator address from an application_information JSON value (`params.creator`, or a
+    /// top-level `creator`). `None` if absent. Pure, so it is unit-tested without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_app_creator_from_app_info_value(v: &serde_json::Value) -> Option<String> {
+        v.get("params")
+            .and_then(|p| p.get("creator").and_then(|x| x.as_str()))
+            .or_else(|| v.get("creator").and_then(|x| x.as_str()))
+            .map(|s| s.to_string())
+    }
+
+    /// Extract the clawback address from an asset_information JSON value (`params.clawback`). Returns
+    /// `None` when the field is absent or empty — algod omits an unset clawback (`omitempty`), so an
+    /// asset with no clawback yields `None`. A caller that needs to reject the all-zero address treats
+    /// it as "not the expected controller" by comparison. Pure, so it is unit-tested without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn parse_clawback_from_asset_info_value(v: &serde_json::Value) -> Option<String> {
+        v.get("params")
+            .and_then(|p| {
+                p.get("clawback")
+                    .or_else(|| p.get("clawback-address"))
+                    .or_else(|| p.get("clawback_address"))
+                    .and_then(|x| x.as_str())
+            })
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+
     /// Transfer the entire reserve balance of an ASA to the creator. The caller must control the reserve address.
     pub fn recover_reserve_balance(&self, asset_id: u64) -> Result<()> {
         if asset_id == 0 {
@@ -3327,6 +3385,24 @@ impl AlgoOps {
         (program_size.saturating_sub(1) / 2048) as u32
     }
 
+    /// Algorand's maximum number of *extra* program pages for an application (4 pages total,
+    /// 2048 bytes each), the ceiling for a create-time page reservation.
+    pub(crate) const MAX_EXTRA_PROGRAM_PAGES: u32 = 3;
+
+    /// The number of *extra* program pages a create should request: the minimum needed to fit
+    /// `program_size` bytes, but never fewer than `reserve_extra_pages` — spare headroom the caller
+    /// locks in at create time so the app can later be updated with a larger program without
+    /// migrating (`extra_program_pages` is immutable after create). Clamped to
+    /// `MAX_EXTRA_PROGRAM_PAGES`. Each extra page adds 2048 bytes of program budget and 0.1 ALGO to
+    /// the creator's minimum balance for the life of the app. Pure, so the sizing is unit-tested
+    /// without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn extra_pages_for(program_size: usize, reserve_extra_pages: u32) -> u32 {
+        Self::required_extra_pages(program_size)
+            .max(reserve_extra_pages)
+            .min(Self::MAX_EXTRA_PROGRAM_PAGES)
+    }
+
     fn estimate_fee_for_programs(
         params: &algonaut::model::algod::SuggestedParams,
         sizes: &[usize],
@@ -3403,6 +3479,37 @@ impl AlgoOps {
         opt_in_method_name: &str,
         arc56_json: &str,
     ) -> Result<Option<u64>> {
+        self.deploy_app_reserving(
+            approval_program,
+            clear_state_program,
+            asset_id,
+            method,
+            args,
+            opt_in_method_name,
+            arc56_json,
+            0,
+        )
+    }
+
+    /// Like [`deploy_app`](Self::deploy_app), but reserves at least `reserve_extra_pages` *extra*
+    /// program pages at create time so the app can later be updated with a larger program without
+    /// migrating (`extra_program_pages` is immutable after create). The actual count is
+    /// `max(required_to_fit, reserve_extra_pages)`, clamped to Algorand's maximum of 3 extra pages
+    /// (via the `extra_pages_for` helper). Each reserved page adds 0.1 ALGO to the
+    /// creator's minimum balance for the life of the app. `reserve_extra_pages = 0` is identical to
+    /// [`deploy_app`](Self::deploy_app).
+    #[allow(clippy::too_many_arguments)]
+    pub fn deploy_app_reserving(
+        &self,
+        approval_program: &[u8],
+        clear_state_program: &[u8],
+        asset_id: Option<u64>,
+        method: Option<&str>,
+        args: &[AppArg],
+        opt_in_method_name: &str,
+        arc56_json: &str,
+        reserve_extra_pages: u32,
+    ) -> Result<Option<u64>> {
         if approval_program.is_empty() {
             bail!("approval_program must not be empty");
         }
@@ -3470,8 +3577,10 @@ impl AlgoOps {
         // The AVM caps a program at 2048 bytes per page; a combined approval+clear larger than one
         // page must request the extra pages at create time (each adds 2048 bytes of budget, and
         // 100_000 microAlgos to the *app account's* minimum balance — not the create fee). Size them
-        // to the minimum that fits, so a contract that has grown past one page still deploys.
-        let extra_pages = Self::required_extra_pages(est_prog_size);
+        // to the minimum that fits, but honour any caller-requested reservation of spare pages so a
+        // contract that later grows past its current pages can be updated in place rather than
+        // migrated (extra_program_pages is immutable after create).
+        let extra_pages = Self::extra_pages_for(est_prog_size, reserve_extra_pages);
         if extra_pages > 0 {
             builder = builder.extra_pages(extra_pages);
         }
