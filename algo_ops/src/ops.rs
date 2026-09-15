@@ -3327,6 +3327,24 @@ impl AlgoOps {
         (program_size.saturating_sub(1) / 2048) as u32
     }
 
+    /// Algorand's maximum number of *extra* program pages for an application (4 pages total,
+    /// 2048 bytes each), the ceiling for a create-time page reservation.
+    pub(crate) const MAX_EXTRA_PROGRAM_PAGES: u32 = 3;
+
+    /// The number of *extra* program pages a create should request: the minimum needed to fit
+    /// `program_size` bytes, but never fewer than `reserve_extra_pages` — spare headroom the caller
+    /// locks in at create time so the app can later be updated with a larger program without
+    /// migrating (`extra_program_pages` is immutable after create). Clamped to
+    /// `MAX_EXTRA_PROGRAM_PAGES`. Each extra page adds 2048 bytes of program budget and 0.1 ALGO to
+    /// the creator's minimum balance for the life of the app. Pure, so the sizing is unit-tested
+    /// without a node.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn extra_pages_for(program_size: usize, reserve_extra_pages: u32) -> u32 {
+        Self::required_extra_pages(program_size)
+            .max(reserve_extra_pages)
+            .min(Self::MAX_EXTRA_PROGRAM_PAGES)
+    }
+
     fn estimate_fee_for_programs(
         params: &algonaut::model::algod::SuggestedParams,
         sizes: &[usize],
@@ -3403,6 +3421,37 @@ impl AlgoOps {
         opt_in_method_name: &str,
         arc56_json: &str,
     ) -> Result<Option<u64>> {
+        self.deploy_app_reserving(
+            approval_program,
+            clear_state_program,
+            asset_id,
+            method,
+            args,
+            opt_in_method_name,
+            arc56_json,
+            0,
+        )
+    }
+
+    /// Like [`deploy_app`](Self::deploy_app), but reserves at least `reserve_extra_pages` *extra*
+    /// program pages at create time so the app can later be updated with a larger program without
+    /// migrating (`extra_program_pages` is immutable after create). The actual count is
+    /// `max(required_to_fit, reserve_extra_pages)`, clamped to `MAX_EXTRA_PROGRAM_PAGES`
+    /// (see [`extra_pages_for`](Self::extra_pages_for)). Each reserved page adds 0.1 ALGO to the
+    /// creator's minimum balance for the life of the app. `reserve_extra_pages = 0` is identical to
+    /// [`deploy_app`](Self::deploy_app).
+    #[allow(clippy::too_many_arguments)]
+    pub fn deploy_app_reserving(
+        &self,
+        approval_program: &[u8],
+        clear_state_program: &[u8],
+        asset_id: Option<u64>,
+        method: Option<&str>,
+        args: &[AppArg],
+        opt_in_method_name: &str,
+        arc56_json: &str,
+        reserve_extra_pages: u32,
+    ) -> Result<Option<u64>> {
         if approval_program.is_empty() {
             bail!("approval_program must not be empty");
         }
@@ -3470,8 +3519,10 @@ impl AlgoOps {
         // The AVM caps a program at 2048 bytes per page; a combined approval+clear larger than one
         // page must request the extra pages at create time (each adds 2048 bytes of budget, and
         // 100_000 microAlgos to the *app account's* minimum balance — not the create fee). Size them
-        // to the minimum that fits, so a contract that has grown past one page still deploys.
-        let extra_pages = Self::required_extra_pages(est_prog_size);
+        // to the minimum that fits, but honour any caller-requested reservation of spare pages so a
+        // contract that later grows past its current pages can be updated in place rather than
+        // migrated (extra_program_pages is immutable after create).
+        let extra_pages = Self::extra_pages_for(est_prog_size, reserve_extra_pages);
         if extra_pages > 0 {
             builder = builder.extra_pages(extra_pages);
         }

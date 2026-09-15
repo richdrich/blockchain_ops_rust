@@ -41,6 +41,9 @@ mod node_errors;
 mod rate_limit;
 #[path = "ops/required_extra_pages.rs"]
 mod required_extra_pages;
+
+#[path = "ops/extra_pages_for.rs"]
+mod extra_pages_for;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]
