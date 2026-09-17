@@ -1,20 +1,15 @@
-//! Regression test for the dynamic `byte[]` ABI-argument encoding bug in `AlgoOps::call_app`.
+//! Tests the dynamic `byte[]` ABI-argument encoding split in `AlgoOps` (#109).
 //!
-//! `call_app` assembles an ABI method call's application args as `[selector] + args.map(AppArg::to_bytes)`,
-//! and `AppArg::to_bytes()` returns the raw bytes with **no ARC-4 framing** (`ops.rs`). That is correct
-//! for *fixed-size* ARC-4 types (`address` = 32 bytes, `uint64` = 8 bytes), which is why every existing
-//! caller works. But a **dynamic** ARC-4 type — `byte[]` — must be encoded `[uint16 length_be][data]`.
-//! Passing the raw bytes makes the contract's ABI decode read the first two data bytes as the length
-//! prefix and fail its length-consistency assert (`len; ==; assert`).
+//! `AppArg` is **raw bytes by contract** — `call_app` / `call_app_raw_args` send each arg verbatim and the
+//! caller frames dynamic ARC-4 types (e.g. `register(string)` pre-prefixes its handle). That is why a raw
+//! `byte[]` arg is rejected by a contract's ABI decode: it reads the first two data bytes as the length
+//! prefix and fails its length-consistency assert (`len; ==; assert`). This bit production — sw-node's
+//! `register_sidewinder_endpoint(byte[])` publish sent an unframed `byte[]` and was rejected on-chain.
 //!
-//! This surfaced in production: sw-node's `register_sidewinder_endpoint(byte[])` endpoint publish is the
-//! first caller to pass a dynamic `byte[]` arg, and it is rejected on-chain (assert failed pc=… on the
-//! Bingle DApp). See the bug for the full write-up.
-//!
-//! The fixture `dapp/bytesarg_approval.teal` reproduces the exact puya-generated check: on a NoOp method
-//! call it asserts `on_wire_len(arg) == 2 + declared_uint16_len(arg)`. This test deploys it and calls
-//! `store_bytes(byte[])` with a 3-byte record; it is **RED until `call_app` ARC-4-encodes dynamic byte[]
-//! args** (algo_ops bug: dynamic-byte[]-abi-encoding). It turns GREEN once the arg is length-prefixed.
+//! `call_app_arc4_args` is the framing variant: it length-prefixes dynamic (`byte[]`/`string`) args from the
+//! method signature. This test deploys `dapp/bytesarg_approval.teal` (which reproduces puya's
+//! `on_wire_len(arg) == 2 + declared_uint16_len(arg)` check on a NoOp `store_bytes(byte[])` call) and asserts:
+//! raw `call_app` is **rejected** (caller-frames contract preserved), and `call_app_arc4_args` is **accepted**.
 
 use crate::support::setup_localnet;
 use crate::support::test_util;
@@ -67,12 +62,26 @@ pub fn call_app_arc4_encodes_a_dynamic_byte_slice_arg() {
         .expect("created app id");
 
     // A 3-byte record whose first two bytes (0xAABB) are NOT a valid length prefix for a 3-byte arg,
-    // so the fixture's ARC-4 length assert fails unless call_app prepends the real [uint16 len] prefix.
+    // so the fixture's ARC-4 length assert (len == 2 + declared) fails unless the arg is length-prefixed.
     let record = vec![0xAAu8, 0xBB, 0xCC];
 
-    // RED until AlgoOps::call_app ARC-4-encodes dynamic `byte[]` args. When it does, the wire arg becomes
-    // [00 03][AA BB CC] and the contract's length assert (len == 2 + declared) passes.
-    let result = ops.call_app(
+    // Raw call_app: AppArg is raw-bytes-by-contract, so the byte[] goes on the wire unframed and the
+    // contract's ARC-4 decode rejects it. This is the documented raw contract, NOT a bug — callers that
+    // pre-frame (e.g. register(string)) rely on it, so call_app must NOT auto-frame.
+    let raw = ops.call_app(
+        app_id,
+        None,
+        Some("store_bytes(byte[])void"),
+        &[AppArg::Bytes(record.clone())],
+    );
+    assert!(
+        raw.is_err(),
+        "raw call_app must pass a dynamic byte[] arg UNframed (caller-frames contract); the contract rejects it"
+    );
+
+    // call_app_arc4_args frames the dynamic arg from the signature: the wire arg becomes [00 03][AA BB CC],
+    // so the contract's length assert (len == 2 + declared) passes.
+    let framed = ops.call_app_arc4_args(
         app_id,
         None,
         Some("store_bytes(byte[])void"),
@@ -81,9 +90,8 @@ pub fn call_app_arc4_encodes_a_dynamic_byte_slice_arg() {
 
     ops.delete_app(app_id).ok();
 
-    result.expect(
-        "call_app(store_bytes(byte[])) must succeed — a dynamic byte[] arg must be ARC-4 length-prefixed \
-         [uint16 len][data]; AlgoOps::call_app currently passes the raw bytes, so the contract's byte[] \
-         decode rejects it (assert len == 2 + declared). RED until the dynamic-byte[] ABI encoding is fixed.",
+    framed.expect(
+        "call_app_arc4_args(store_bytes(byte[])) must succeed — it ARC-4-frames the dynamic byte[] arg \
+         as [uint16 len][data] so the contract's byte[] decode accepts it",
     );
 }

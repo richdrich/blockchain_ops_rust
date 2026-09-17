@@ -3750,6 +3750,40 @@ impl AlgoOps {
         self.sign_submit_and_fetch_logs(tx)
     }
 
+    /// Explicit synonym for [`call_app`]: every [`AppArg`] is sent as **raw bytes** and the caller is
+    /// responsible for any ARC-4 framing — in particular the 2-byte big-endian length prefix a dynamic
+    /// `byte[]` / `string` argument needs. This is the historical `call_app` contract; use it when you
+    /// pre-frame args yourself, or [`call_app_arc4_args`] to have the framing done for you.
+    pub fn call_app_raw_args(
+        &self,
+        app_id: u64,
+        asset_id: Option<u64>,
+        method: Option<&str>,
+        args: &[AppArg],
+    ) -> Result<(String, Vec<Vec<u8>>)> {
+        self.call_app(app_id, asset_id, method, args)
+    }
+
+    /// ARC-4-encoding variant of [`call_app`]: **dynamic** ABI arguments (`byte[]`, `string`) are framed
+    /// with their 2-byte big-endian length prefix, inferred from `method`'s signature, so the caller passes
+    /// the plain payload. Fixed-size ARC-4 args (`address`, `uint64`, `byte[N]`, …) are unchanged. Prefer
+    /// this for any method with a dynamic argument — the raw [`call_app`] / [`call_app_raw_args`] leave the
+    /// framing to the caller, and an unframed dynamic arg is rejected by the contract's ABI decode.
+    ///
+    /// # Errors
+    /// Errors if a dynamic argument exceeds the `byte[]`/`string` length field (`u16::MAX`), plus every
+    /// error [`call_app`] can return.
+    pub fn call_app_arc4_args(
+        &self,
+        app_id: u64,
+        asset_id: Option<u64>,
+        method: Option<&str>,
+        args: &[AppArg],
+    ) -> Result<(String, Vec<Vec<u8>>)> {
+        let framed = arc4_frame_args(method, args)?;
+        self.call_app(app_id, asset_id, method, &framed)
+    }
+
     /// Call an application method with explicit foreign accounts.
     ///
     /// Like [`AlgoOps::call_app`], but `extra_accounts` are placed at the front of the transaction's
@@ -4465,6 +4499,85 @@ impl AppArg {
             AppArg::Uint(v) => v.to_be_bytes().to_vec(),
         }
     }
+}
+
+/// Split an ABI method signature's **top-level** argument types.
+/// `"foo(byte[],uint64)void"` -> `["byte[]", "uint64"]`; `"foo()void"` -> `[]`. Respects nesting so a
+/// tuple/array's inner commas are not split (`"foo((uint64,byte[]),address)"` -> `["(uint64,byte[])","address"]`).
+/// Returns `None` if there is no argument list. Used to decide which args need ARC-4 dynamic framing.
+fn abi_arg_types(sig: &str) -> Option<Vec<String>> {
+    let open = sig.find('(')?;
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut inner: Option<&str> = None;
+    for (i, c) in sig.char_indices().skip_while(|(i, _)| *i < open) {
+        match c {
+            '(' => {
+                depth += 1;
+                if depth == 1 {
+                    start = i + 1;
+                }
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    inner = Some(&sig[start..i]);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let inner = inner?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut d = 0i32;
+    let mut seg = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' | '[' => d += 1,
+            ')' | ']' => d -= 1,
+            ',' if d == 0 => {
+                out.push(inner[seg..i].trim().to_string());
+                seg = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[seg..].trim().to_string());
+    Some(out)
+}
+
+/// ARC-4-frame `args` for `method`: a `byte[]` / `string` argument (dynamic ARC-4 types) is wrapped with
+/// its 2-byte big-endian length prefix; every other argument is passed through unchanged (fixed-size ARC-4
+/// types are already their own wire form, and an argument whose type can't be determined is left as-is —
+/// the raw contract). Used by [`AlgoOps::call_app_arc4_args`].
+fn arc4_frame_args(method: Option<&str>, args: &[AppArg]) -> Result<Vec<AppArg>> {
+    let types = method.and_then(abi_arg_types);
+    args.iter()
+        .enumerate()
+        .map(|(i, arg)| {
+            let ty = types.as_ref().and_then(|t| t.get(i)).map(String::as_str);
+            match ty {
+                Some("byte[]") | Some("string") => {
+                    let raw = arg.to_bytes();
+                    let len = u16::try_from(raw.len()).map_err(|_| {
+                        anyhow!(
+                            "ARC-4 byte[]/string argument {i} is {} bytes, over the u16 length limit",
+                            raw.len()
+                        )
+                    })?;
+                    let mut framed = Vec::with_capacity(2 + raw.len());
+                    framed.extend_from_slice(&len.to_be_bytes());
+                    framed.extend_from_slice(&raw);
+                    Ok(AppArg::Bytes(framed))
+                }
+                _ => Ok(arg.clone()),
+            }
+        })
+        .collect()
 }
 
 /// Decode first 32 bytes of an Algorand address' base32 to get the public key.
