@@ -1,0 +1,42 @@
+#pragma version 8
+// Test fixture for the dynamic-byte[] ABI-encoding regression (algo_ops call_app).
+//
+// Permissive except for one thing: a NoOp method call carrying a selector + one argument is treated as
+// `store_bytes(byte[])` and the argument is validated as a well-formed ARC-4 dynamic `byte[]` —
+// i.e. its on-the-wire length must equal 2 (the uint16 length prefix) + the declared length. This is
+// exactly the length-consistency assert puya generates for a `byte[]` ABI parameter (the same check
+// that rejects the sw-node endpoint publish against the Bingle DApp). A caller that passes the raw
+// bytes WITHOUT the ARC-4 length prefix fails this assert.
+//
+// create (ApplicationID == 0), and any non-NoOp completion (OptIn / Delete / Update), approve.
+
+txn ApplicationID
+int 0
+==
+bnz approve                 // bare create -> approve
+
+txn OnCompletion
+int NoOp
+==
+bz approve                  // not a NoOp app call (opt-in / delete / update) -> approve
+
+txn NumAppArgs
+int 2
+<
+bnz approve                 // NoOp with < 2 args (no selector+arg) -> approve
+
+// NoOp method call: arg 0 = selector, arg 1 = the ARC-4 byte[]. Validate arg 1's framing.
+txna ApplicationArgs 1
+dup
+len                         // L = actual on-wire length of the argument
+swap
+int 0
+extract_uint16              // D = declared length (big-endian uint16 at offset 0)
+int 2
++                           // D + 2 (the length prefix is 2 bytes)
+==
+assert                      // require L == D + 2 : a valid ARC-4 dynamic byte[] (fails for raw, unprefixed bytes)
+
+approve:
+int 1
+return

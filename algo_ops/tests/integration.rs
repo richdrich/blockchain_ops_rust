@@ -19,6 +19,8 @@ mod asset_clawback_creator_localnet;
 mod asset_configured_creator_localnet;
 #[path = "ops/asset_manager_creator_localnet.rs"]
 mod asset_manager_creator_localnet;
+#[path = "ops/call_app_dynamic_bytes_arg_localnet.rs"]
+mod call_app_dynamic_bytes_arg_localnet;
 #[path = "ops/dapp_app_integration_localnet.rs"]
 mod dapp_app_integration_localnet;
 #[path = "ops/fetch_opted_in_accounts_cached_localnet.rs"]
