@@ -41,6 +41,12 @@ pub trait SidewinderOps {
 
     /// Long-poll form of [`SidewinderOps::status`]: the node holds the request open until the stage
     /// advances or `wait_secs` elapses.
+    ///
+    /// A terminal unsuccessful outcome (`Failed`, `Rejected`, `Expired`) is returned as `Ok` with the
+    /// node's reason in [`PendingTransaction::error`](crate::PendingTransaction::error), not as an
+    /// error: the request worked, and re-submitting will not change the outcome. Check
+    /// [`Stage::is_terminal`](crate::Stage::is_terminal) to stop polling and
+    /// [`Stage::is_unsuccessful`](crate::Stage::is_unsuccessful) to stop retrying.
     fn watch(&self, txid: &str, proof: bool, wait_secs: u64) -> Result<PendingTransaction>;
 
     /// Suggested parameters for building a transaction header.
