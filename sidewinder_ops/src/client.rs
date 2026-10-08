@@ -80,6 +80,76 @@ pub struct SidewinderClient {
 const MAX_RETRIES: u32 = 3;
 const RETRY_BASE_MS: u64 = 1_000;
 
+// Why one send failed, classified while the error is still typed (before it is flattened to text).
+enum SendFailure {
+    // the node completed the mutual-TLS handshake far enough to refuse this client's identity with the
+    // `access_denied` alert. Carries the full cause chain.
+    IdentityRefused(String),
+    // the request could not be sent, or its response could not be read. Carries the full cause chain —
+    // `reqwest`'s own message is only "error sending request for url (…)", which names no cause.
+    Transport(String),
+    // a local failure before anything was sent (the HTTP client could not be built).
+    Local(anyhow::Error),
+}
+
+impl SendFailure {
+    // Classify a failed `reqwest` call. `mutual_tls` is whether this client presented an identity
+    // certificate — only then can an `access_denied` alert mean "the node refused this identity".
+    fn from_reqwest(error: reqwest::Error, mutual_tls: bool) -> Self {
+        let chain = cause_chain(&error);
+        if mutual_tls && refused_with_access_denied(&error, &chain) {
+            SendFailure::IdentityRefused(chain)
+        } else {
+            SendFailure::Transport(chain)
+        }
+    }
+}
+
+// The error and every cause beneath it, outermost first, joined with ": " — the whole story rather
+// than the top-level summary. A cause whose text an outer message already includes is not repeated.
+fn cause_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut chain = error.to_string();
+    let mut cause = error.source();
+    while let Some(inner) = cause {
+        let text = inner.to_string();
+        if !chain.contains(&text) {
+            chain.push_str(": ");
+            chain.push_str(&text);
+        }
+        cause = inner.source();
+    }
+    chain
+}
+
+// Whether `error` was caused by the peer sending the TLS `access_denied` alert — how a Sidewinder node
+// refuses an authentic identity it does not permit. Checked on the typed `rustls` error where the
+// chain exposes it; an I/O error hides its payload from `source()`, so that is looked inside too. The
+// text check is the fallback for a chain that carries the alert only as a message.
+fn refused_with_access_denied(error: &(dyn std::error::Error + 'static), chain: &str) -> bool {
+    fn is_access_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+        matches!(
+            error.downcast_ref::<rustls::Error>(),
+            Some(rustls::Error::AlertReceived(
+                rustls::AlertDescription::AccessDenied
+            ))
+        )
+    }
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = cause {
+        if is_access_denied(current) {
+            return true;
+        }
+        if let Some(io) = current.downcast_ref::<std::io::Error>()
+            && let Some(payload) = io.get_ref()
+            && is_access_denied(payload)
+        {
+            return true;
+        }
+        cause = current.source();
+    }
+    chain.contains("received fatal alert: AccessDenied")
+}
+
 impl SidewinderClient {
     /// Build a client from an Algorand operations handle (which signs transactions) and endpoint config.
     /// The default plaintext transport: requests carry the config's bearer token.
@@ -234,7 +304,8 @@ impl SidewinderClient {
     }
 
     // Send one request, returning `(status, body)` for any served HTTP response. Only network-level
-    // failures (unreachable host) surface as `Err`; HTTP status handling is left to the callers.
+    // failures (an unreachable host, a refused handshake) surface as `Err`, classified as a
+    // [`SendFailure`]; HTTP status handling is left to the callers.
     fn send_once(
         &self,
         method: Method,
@@ -242,7 +313,7 @@ impl SidewinderClient {
         body: Option<Vec<u8>>,
         authenticated: bool,
         timeout: Option<Duration>,
-    ) -> Result<(u16, Vec<u8>)> {
+    ) -> std::result::Result<(u16, Vec<u8>), SendFailure> {
         let url = self.url(path);
         let token = self.config.token.clone();
         let tls = self.tls.clone();
@@ -253,9 +324,10 @@ impl SidewinderClient {
                 // our client certificate); the node authenticates us at the handshake, not via a token.
                 builder = builder.tls_backend_preconfigured((**tls).clone());
             }
-            let client = builder
-                .build()
-                .map_err(|e| anyhow!("failed to build HTTP client: {e}"))?;
+            let mutual_tls = tls.is_some();
+            let client = builder.build().map_err(|e| {
+                SendFailure::Local(anyhow!("failed to build HTTP client: {}", cause_chain(&e)))
+            })?;
             let mut req = client.request(method, &url);
             // bearer auth applies only to the plaintext transport; mutual TLS is the authentication.
             if authenticated && tls.is_none() {
@@ -269,15 +341,44 @@ impl SidewinderClient {
             if let Some(t) = timeout {
                 req = req.timeout(t);
             }
-            let resp = req.send().await.map_err(|e| anyhow!("{e}"))?;
+            // in TLS 1.3 the client's handshake finishes before the node has judged its certificate,
+            // so a refusal can arrive on either the send or the first read of the response.
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| SendFailure::from_reqwest(e, mutual_tls))?;
             let status = resp.status().as_u16();
-            let bytes = resp.bytes().await.map_err(|e| anyhow!("{e}"))?.to_vec();
-            Ok::<(u16, Vec<u8>), anyhow::Error>((status, bytes))
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| SendFailure::from_reqwest(e, mutual_tls))?
+                .to_vec();
+            Ok::<(u16, Vec<u8>), SendFailure>((status, bytes))
         };
-        self.rt_block_on(fut)?
+        self.rt_block_on(fut).map_err(SendFailure::Local)?
     }
 
-    // Send with retry-and-backoff on unreachable-host errors (a served HTTP error is not retried).
+    // The error for a node that refused this client's identity: says the node was reached, names the
+    // identity it refused, and what to check — the cause chain alone only says `access_denied`.
+    fn identity_refused(&self, operation: &str, chain: &str) -> SidewinderError {
+        let identity = self
+            .algo
+            .address_str()
+            .unwrap_or_else(|_| "(unknown address)".to_string());
+        SidewinderError::identity_refused(
+            operation,
+            &format!(
+                "the node at {} refused this client's identity {identity}: it is not a permitted \
+                 client there. Check that the account is opted in to the node's membership \
+                 application and has the client permission bit set (a newly set bit is only seen at \
+                 the node's next membership poll). Cause: {chain}",
+                self.config.trimmed_base()
+            ),
+        )
+    }
+
+    // Send with retry-and-backoff on unreachable-host errors. A served HTTP error is not retried, and
+    // neither is a refused identity: the node answered, and asking again cannot change the answer.
     fn send(
         &self,
         operation: &str,
@@ -291,8 +392,11 @@ impl SidewinderClient {
         loop {
             match self.send_once(method.clone(), path, body.clone(), authenticated, timeout) {
                 Ok(pair) => return Ok(pair),
-                Err(e) => {
-                    let msg = e.to_string();
+                Err(SendFailure::IdentityRefused(chain)) => {
+                    return Err(self.identity_refused(operation, &chain).into());
+                }
+                Err(SendFailure::Local(e)) => return Err(e),
+                Err(SendFailure::Transport(msg)) => {
                     if attempt < MAX_RETRIES && SidewinderError::looks_unreachable(&msg) {
                         let delay = Duration::from_millis(RETRY_BASE_MS * (1u64 << attempt));
                         tracing::warn!(
@@ -310,7 +414,7 @@ impl SidewinderClient {
                     if SidewinderError::looks_unreachable(&msg) {
                         return Err(SidewinderError::unreachable(operation, &msg).into());
                     }
-                    return Err(e);
+                    return Err(anyhow!("{msg}"));
                 }
             }
         }

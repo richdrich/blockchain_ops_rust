@@ -14,6 +14,12 @@ pub enum SidewinderErrorKind {
     TransientFailure,
     /// The request was rejected for a missing or invalid bearer token (HTTP 401).
     Unauthorized,
+    /// The node was reached over mutual TLS and **refused this client's identity** at the handshake:
+    /// the account is not a permitted client on that node (not opted in to the membership application,
+    /// its client permission bit is not set, or the node has not yet polled a newly set bit). Not a
+    /// network fault, so it is never retried by the client — retrying cannot change the answer until
+    /// the account's on-chain membership does.
+    IdentityRefused,
     /// The node has no record of the requested resource (HTTP 404).
     NotFound,
     /// The request was malformed and the node rejected it (HTTP 400).
@@ -83,6 +89,17 @@ impl SidewinderError {
         }
     }
 
+    /// The node refused this client's identity at the mutual-TLS handshake (see
+    /// [`SidewinderErrorKind::IdentityRefused`]).
+    pub fn identity_refused(operation: &str, message: &str) -> Self {
+        Self {
+            kind: SidewinderErrorKind::IdentityRefused,
+            operation: operation.to_string(),
+            status: None,
+            message: message.to_string(),
+        }
+    }
+
     pub fn not_found(operation: &str, message: &str) -> Self {
         Self {
             kind: SidewinderErrorKind::NotFound,
@@ -131,6 +148,9 @@ impl SidewinderError {
 
     /// True when a `reqwest` error string looks like an unreachable host rather than a served
     /// HTTP response, so [`crate::SidewinderClient`] can retry it. Mirrors the algo_ops heuristic.
+    ///
+    /// The client checks for a refused identity first (a typed check on the error's cause chain, not
+    /// this string heuristic), so a node that answered "no" is not mistaken for one that never answered.
     pub fn looks_unreachable(message: &str) -> bool {
         let s = message.to_lowercase();
         s.contains("tcp connect error")
