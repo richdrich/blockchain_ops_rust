@@ -1,15 +1,15 @@
-//! Tests for the `account-vault` binary, driven end to end. The password is supplied on standard
+//! Tests for the `blockchain-account-vault` binary, driven end to end. The password is supplied on standard
 //! input, which is how a script drives the tool.
 
 use std::path::Path;
 
-use account_vault::envelope::{FAST_KDF_ENV, is_encrypted_envelope};
 use assert_cmd::Command;
+use blockchain_account_vault::envelope::{FAST_KDF_ENV, is_encrypted_envelope};
 
 use crate::support::{ADDRESS, PASSPHRASE, PASSWORD, SEED_FILE, account_json, write};
 
 fn tool() -> Command {
-    let mut command = Command::cargo_bin("account-vault").unwrap();
+    let mut command = Command::cargo_bin("blockchain-account-vault").unwrap();
     command.env(FAST_KDF_ENV, "1");
     command
 }

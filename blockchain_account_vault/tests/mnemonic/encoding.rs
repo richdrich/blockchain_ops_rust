@@ -1,8 +1,8 @@
-//! Unit tests for `account_vault::mnemonic` — the generalised Algorand-style
+//! Unit tests for `blockchain_account_vault::mnemonic` — the generalised Algorand-style
 //! mnemonic encoder.
 //!
 
-use account_vault::mnemonic::{bytes_to_mnemonic, mnemonic_to_bytes};
+use blockchain_account_vault::mnemonic::{bytes_to_mnemonic, mnemonic_to_bytes};
 
 #[test]
 fn matches_algonaut_for_32_byte_key() {

@@ -13,7 +13,7 @@
 //! - [`mnemonic`]: writes any bytes as Algorand-style words.
 //! - [`pdf`]: renders the backup pages.
 //!
-//! The `account-vault` tool drives these from the command line. The file formats
+//! The `blockchain-account-vault` tool drives these from the command line. The file formats
 //! are the ones `bingle_admin` writes, so the two are interchangeable.
 
 pub mod account_dir;

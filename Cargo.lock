@@ -3,26 +3,6 @@
 version = 4
 
 [[package]]
-name = "account_vault"
-version = "0.8.8"
-dependencies = [
- "aes-gcm",
- "algonaut",
- "anyhow",
- "argon2",
- "assert_cmd",
- "base64 0.22.1",
- "clap",
- "printpdf",
- "qrcode",
- "rand 0.8.7",
- "rpassword",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -539,6 +519,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "blockchain_account_vault"
+version = "0.8.8"
+dependencies = [
+ "aes-gcm",
+ "algonaut",
+ "anyhow",
+ "argon2",
+ "assert_cmd",
+ "base64 0.22.1",
+ "clap",
+ "printpdf",
+ "qrcode",
+ "rand 0.8.7",
+ "rpassword",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
-//! Unit tests for `account_vault::pdf` — PDF rendering of backup pages.
+//! Unit tests for `blockchain_account_vault::pdf` — PDF rendering of backup pages.
 //!
 
-use account_vault::pdf::{BackupPage, MAX_MNEMONIC_WORDS, render_backup_pdf};
+use blockchain_account_vault::pdf::{BackupPage, MAX_MNEMONIC_WORDS, render_backup_pdf};
 
 fn sample(name: &str, encrypted: bool) -> BackupPage {
     BackupPage {

@@ -1,10 +1,10 @@
 //! A fixed vector for the on-disk formats. The envelope and the blob below were written once and
-//! are never regenerated: if a change to `account_vault::envelope` stops them opening, it has broken
+//! are never regenerated: if a change to `blockchain_account_vault::envelope` stops them opening, it has broken
 //! every key file already sealed, by this crate or by `bingle_admin`, which writes the same formats.
 
-use account_vault::envelope::{decrypt_bytes, decrypt_secret, is_encrypted_envelope};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use blockchain_account_vault::envelope::{decrypt_bytes, decrypt_secret, is_encrypted_envelope};
 
 use crate::support::{PASSWORD, account_json};
 

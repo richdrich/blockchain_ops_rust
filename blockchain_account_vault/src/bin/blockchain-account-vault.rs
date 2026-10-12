@@ -1,10 +1,10 @@
-//! `account-vault`: seal a directory of key files under a password, open one to
+//! `blockchain-account-vault`: seal a directory of key files under a password, open one to
 //! standard output, or print the paper backups.
 //!
 //! ```text
-//! account-vault seal <DIR> [--recursive] [--same-password-as <FILE.enc>]
-//! account-vault open <FILE> [--field <NAME>]
-//! account-vault print <DIR> --out <FILE.pdf> [--recursive]
+//! blockchain-account-vault seal <DIR> [--recursive] [--same-password-as <FILE.enc>]
+//! blockchain-account-vault open <FILE> [--field <NAME>]
+//! blockchain-account-vault print <DIR> --out <FILE.pdf> [--recursive]
 //! ```
 //!
 //! The password is read from the terminal without echo. With no terminal on
@@ -14,14 +14,14 @@
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-use account_vault::pdf::render_backup_pdf;
-use account_vault::vault::{KeyFile, Vault, backup_page, discover, json_field};
 use anyhow::{Context, Result, bail};
+use blockchain_account_vault::pdf::render_backup_pdf;
+use blockchain_account_vault::vault::{KeyFile, Vault, backup_page, discover, json_field};
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "account-vault",
+    name = "blockchain-account-vault",
     version,
     about = "Password-sealed key files and their paper backups"
 )]

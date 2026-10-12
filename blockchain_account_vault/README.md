@@ -1,4 +1,4 @@
-# account_vault
+# blockchain_account_vault
 
 Key files sealed under a password, with printable paper backups.
 
@@ -18,37 +18,37 @@ Its **sealed** form is the same name with `.enc` appended: `APP_ADMIN.json` beco
 ## The tool
 
 ```
-cargo install account_vault
+cargo install blockchain_account_vault
 ```
 
 Seal every key file in a directory, and in the directories beneath it. The plaintext is deleted once each sealed file has been checked:
 
 ```
-account-vault seal ./mainnet_accounts --recursive
+blockchain-account-vault seal ./mainnet_accounts --recursive
 ```
 
 The password is asked for twice. It must also open every file already sealed there, so one directory tree cannot end up under two passwords. To hold a separate directory to the password of an existing file:
 
 ```
-account-vault seal ./cluster --recursive --same-password-as ./mainnet_accounts/APP_ADMIN.json.enc
+blockchain-account-vault seal ./cluster --recursive --same-password-as ./mainnet_accounts/APP_ADMIN.json.enc
 ```
 
 Open one key file to standard output. Nothing is written to disk:
 
 ```
-account-vault open ./cluster/node-0/consensus.key
+blockchain-account-vault open ./cluster/node-0/consensus.key
 ```
 
 Print one field of an account, for a command that takes the 25 words as an argument:
 
 ```
-account-vault open ./mainnet_accounts/RELAY_USER_1.json --field passphrase
+blockchain-account-vault open ./mainnet_accounts/RELAY_USER_1.json --field passphrase
 ```
 
 Render a backup sheet for every key file, one page each:
 
 ```
-account-vault print ./mainnet_accounts --recursive --out backup.pdf
+blockchain-account-vault print ./mainnet_accounts --recursive --out backup.pdf
 ```
 
 The password is read from the terminal without echo. When standard input is not a terminal it is read as one line from standard input, so a script can supply it.

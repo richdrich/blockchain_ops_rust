@@ -1,12 +1,12 @@
 [package]
-name = "account_vault"
+name = "blockchain_account_vault"
 version = "0.8.8"
 edition = "2024"
 description = "Password-sealed key files (Argon2id + AES-256-GCM) with printable paper backups, for Algorand accounts and other small secrets."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/richdrich/blockchain_ops_rust"
 homepage = "https://github.com/richdrich/blockchain_ops_rust"
-documentation = "https://docs.rs/account_vault"
+documentation = "https://docs.rs/blockchain_account_vault"
 readme = "README.md"
 keywords = ["algorand", "encryption", "keys", "backup", "wallet"]
 categories = ["cryptography", "command-line-utilities"]
@@ -23,7 +23,7 @@ argon2 = "0.5"
 # the envelope carries its salt, nonce and ciphertext as base64, and a backup page's QR code holds
 # the secret as base64.
 base64 = "0.22"
-# the `account-vault` tool's argument parsing.
+# the `blockchain-account-vault` tool's argument parsing.
 clap = { version = "4.5", features = ["derive"] }
 # renders the paper backup: one page per key file.
 printpdf = "0.7"
@@ -41,7 +41,7 @@ sha2 = "0.10"
 [dev-dependencies]
 # the mnemonic tests assert that a 32-byte key encodes to exactly algonaut's 25 words.
 algonaut = "0.8.0"
-# drives the `account-vault` binary end to end.
+# drives the `blockchain-account-vault` binary end to end.
 assert_cmd = "2.0"
 # a scratch directory per test for the files being sealed.
 tempfile = "3"
@@ -57,7 +57,7 @@ name = "unit"
 path = "tests/unit.rs"
 
 # ── Binaries ─────────────────────────────────────────────────────────────────
-# `account-vault`: seal a directory of key files, open one to standard output, or print the backups.
+# `blockchain-account-vault`: seal a directory of key files, open one to standard output, or print the backups.
 [[bin]]
-name = "account-vault"
-path = "src/bin/account-vault.rs"
+name = "blockchain-account-vault"
+path = "src/bin/blockchain-account-vault.rs"

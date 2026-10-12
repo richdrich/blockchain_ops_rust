@@ -1,12 +1,12 @@
-//! Unit tests for the password-based key-file encryption in `account_vault::envelope`.
+//! Unit tests for the password-based key-file encryption in `blockchain_account_vault::envelope`.
 
 use std::sync::Once;
 
-use account_vault::envelope::{
+use anyhow::anyhow;
+use blockchain_account_vault::envelope::{
     ENVELOPE_MARKER, FAST_KDF_ENV, decrypt_bytes, decrypt_secret, derive_key, encrypt_bytes,
     encrypt_secret, is_encrypted_envelope, reencrypt_envelope,
 };
-use anyhow::anyhow;
 use serde_json::Value;
 
 const SAMPLE: &[u8] = br#"{"address":"ABC","passphrase":"twenty five word mnemonic here"}"#;

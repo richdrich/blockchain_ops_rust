@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Once;
 
-use account_vault::envelope::FAST_KDF_ENV;
+use blockchain_account_vault::envelope::FAST_KDF_ENV;
 
 static FAST_KDF: Once = Once::new();
 

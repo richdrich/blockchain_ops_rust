@@ -1,16 +1,16 @@
-//! Unit tests for `account_vault::vault`: discovering, sealing and opening key files, and building
+//! Unit tests for `blockchain_account_vault::vault`: discovering, sealing and opening key files, and building
 //! their backup pages.
 
 use std::cell::Cell;
 
-use account_vault::envelope::{decrypt_secret, is_encrypted_envelope};
-use account_vault::mnemonic::mnemonic_to_bytes;
-use account_vault::vault::{
-    KeyFile, MAX_PRINTABLE_SECRET_LEN, Vault, backup_page, discover, json_field,
-};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use blockchain_account_vault::envelope::{decrypt_secret, is_encrypted_envelope};
+use blockchain_account_vault::mnemonic::mnemonic_to_bytes;
+use blockchain_account_vault::vault::{
+    KeyFile, MAX_PRINTABLE_SECRET_LEN, Vault, backup_page, discover, json_field,
+};
 
 use crate::support::{ADDRESS, PASSPHRASE, PASSWORD, SEED_FILE, account_json, fast_kdf, write};
 
@@ -262,7 +262,7 @@ fn the_largest_secret_still_fits_the_page_when_sealed() {
     fast_kdf();
     let largest = vec![b'x'; MAX_PRINTABLE_SECRET_LEN];
     let page = backup_page("FITS", &largest, Some(PASSWORD)).unwrap();
-    assert!(account_vault::pdf::render_backup_pdf(&[page]).is_ok());
+    assert!(blockchain_account_vault::pdf::render_backup_pdf(&[page]).is_ok());
 }
 
 #[test]

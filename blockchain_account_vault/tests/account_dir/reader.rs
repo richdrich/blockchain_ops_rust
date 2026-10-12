@@ -1,4 +1,4 @@
-//! Unit tests for `account_vault::account_dir::AccountDir` — resolving plaintext vs
+//! Unit tests for `blockchain_account_vault::account_dir::AccountDir` — resolving plaintext vs
 //! encrypted account files and caching the password across reads.
 //!
 
@@ -8,9 +8,9 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use account_vault::account_dir::AccountDir;
-use account_vault::envelope::{FAST_KDF_ENV, encrypt_bytes};
 use anyhow::{Result, anyhow};
+use blockchain_account_vault::account_dir::AccountDir;
+use blockchain_account_vault::envelope::{FAST_KDF_ENV, encrypt_bytes};
 
 const PLAIN_A: &[u8] = br#"{"address":"AAA","passphrase":"pa"}"#;
 const PLAIN_B: &[u8] = br#"{"address":"BBB","passphrase":"pb"}"#;
