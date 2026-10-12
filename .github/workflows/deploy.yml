@@ -6,8 +6,8 @@ name: deploy
 # deployment pull request (PR), `master` -> `deployed`, is merged. The flow:
 #   1. re-run every gate (fast checks, unit tests, and the localnet integration
 #      bucket) so nothing ships unless all are green;
-#   2. publish `blockchain_ops`, `algo_ops`, `sw_identity_tls`, then
-#      `sidewinder_ops` (ordered — each depends on the ones before) via crates.io
+#   2. publish `blockchain_ops`, `algo_ops`, `sw_identity_tls`, `sidewinder_ops`
+#      (ordered — each depends on the ones before), then `account_vault` via crates.io
 #      Trusted Publishing (OpenID Connect / OIDC), with no stored registry token;
 #   3. tag the released commit `vX.Y.Z`.
 #
@@ -103,8 +103,8 @@ jobs:
       # tolerated so a re-run after a partial failure is safe. cargo waits for
       # the crate to appear in the index before returning, so the ordered publish
       # resolves correctly: blockchain_ops <- algo_ops <- sw_identity_tls, and
-      # algo_ops <- sidewinder_ops.
-      - name: Publish blockchain_ops, algo_ops, sw_identity_tls, then sidewinder_ops
+      # algo_ops <- sidewinder_ops. account_vault depends on none of them.
+      - name: Publish blockchain_ops, algo_ops, sw_identity_tls, sidewinder_ops, then account_vault
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -123,6 +123,7 @@ jobs:
           publish_one algo_ops
           publish_one sw_identity_tls
           publish_one sidewinder_ops
+          publish_one account_vault
 
   # ── Tag the released commit vX.Y.Z (idempotent) ─────────────────────────────
   tag:
