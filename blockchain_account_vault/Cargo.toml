@@ -1,0 +1,63 @@
+[package]
+name = "blockchain_account_vault"
+version = "0.9.0"
+edition = "2024"
+description = "Password-sealed key files (Argon2id + AES-256-GCM) with printable paper backups, for Algorand accounts and other small secrets."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/richdrich/blockchain_ops_rust"
+homepage = "https://github.com/richdrich/blockchain_ops_rust"
+documentation = "https://docs.rs/blockchain_account_vault"
+readme = "README.md"
+keywords = ["algorand", "encryption", "keys", "backup", "wallet"]
+categories = ["cryptography", "command-line-utilities"]
+# Test targets are declared explicitly below (per project guidelines: every test
+# is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
+autotests = false
+
+[dependencies]
+# AES-256-GCM: authenticates and encrypts a key file under the derived key.
+aes-gcm = "0.10"
+anyhow = "1"
+# Argon2id: the memory-hard derivation of that key from the password.
+argon2 = "0.5"
+# the envelope carries its salt, nonce and ciphertext as base64, and a backup page's QR code holds
+# the secret as base64.
+base64 = "0.22"
+# the `blockchain-account-vault` tool's argument parsing.
+clap = { version = "4.5", features = ["derive"] }
+# renders the paper backup: one page per key file.
+printpdf = "0.7"
+# the QR code on each backup page.
+qrcode = "0.14"
+# a fresh random salt and nonce for every encryption.
+rand = "0.8"
+# reads the password from the terminal without echoing it.
+rpassword = "7"
+# the envelope is JSON, and an account key file is `{"address", "passphrase"}` JSON.
+serde_json = "1"
+# SHA-512/256 gives the mnemonic its checksum word, as Algorand's own mnemonic does.
+sha2 = "0.10"
+
+[dev-dependencies]
+# the mnemonic tests assert that a 32-byte key encodes to exactly algonaut's 25 words.
+algonaut = "0.8.0"
+# drives the `blockchain-account-vault` binary end to end.
+assert_cmd = "2.0"
+# a scratch directory per test for the files being sealed.
+tempfile = "3"
+
+[lints]
+workspace = true
+
+# ── Test targets ─────────────────────────────────────────────────────────────
+# One `unit` bucket: nothing here needs an external service. Each file under
+# `tests/<module>/` mirrors a `src` module and is included from `tests/unit.rs`.
+[[test]]
+name = "unit"
+path = "tests/unit.rs"
+
+# ── Binaries ─────────────────────────────────────────────────────────────────
+# `blockchain-account-vault`: seal a directory of key files, open one to standard output, or print the backups.
+[[bin]]
+name = "blockchain-account-vault"
+path = "src/bin/blockchain-account-vault.rs"
