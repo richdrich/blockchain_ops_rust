@@ -1,6 +1,6 @@
 [package]
 name = "blockchain_account_vault"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 description = "Password-sealed key files (Argon2id + AES-256-GCM) with printable paper backups, for Algorand accounts and other small secrets."
 license = "MIT OR Apache-2.0"
