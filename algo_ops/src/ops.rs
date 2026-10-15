@@ -304,6 +304,25 @@ pub struct AlgoSuggestedParams {
     pub genesis_id: String,
 }
 
+/// An account's balance and the minimum balance it must keep, both in µALGO — returned by
+/// [`AlgoOps::account_funds`]. Plain types only, like [`AlgoSuggestedParams`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlgoAccountFunds {
+    /// The account's total balance.
+    pub amount: u64,
+    /// The minimum balance algod requires the account to keep: the base minimum plus a step for
+    /// every asset and application it has opted into or created.
+    pub min_balance: u64,
+}
+
+impl AlgoAccountFunds {
+    /// What the account can spend on fees and payments before algod rejects a transaction for
+    /// taking it below its minimum: `amount - min_balance`, or zero when it is already below.
+    pub fn spendable(&self) -> u64 {
+        self.amount.saturating_sub(self.min_balance)
+    }
+}
+
 // Neutral view of a pending or confirmed transaction. Defined in `blockchain_ops` alongside the
 // `TransactionQueryOps` trait it is returned by; re-exported here so `algo_ops::ConfirmedTxn` and
 // `crate::ops::ConfirmedTxn` keep resolving.
@@ -1772,6 +1791,36 @@ impl AlgoOps {
         let v = serde_json::to_value(&info)
             .map_err(|e| anyhow!("failed to serialize account info: {e}"))?;
         Ok(Self::parse_holding_amount_from_account_value(&v, asset_id))
+    }
+
+    /// Returns the balance of any on-chain address (need not be the signer) together with the
+    /// minimum balance algod requires it to keep, both in µALGO.
+    ///
+    /// The minimum grows with each asset or application the account opts into, so the balance
+    /// alone cannot tell whether an account can still pay a fee: algod rejects a transaction that
+    /// would leave `amount` below `min_balance`. One account read, the same as
+    /// [`microalgos_at`](Self::microalgos_at). Same unreachable-node behaviour as
+    /// [`round`](Self::round), and a typed [`AlgoError`] (a 403 quota stop, a rate-limit rejection)
+    /// is kept intact so a caller polling this can tell those from a transient failure.
+    pub fn account_funds(&self, account_address: &str) -> Result<AlgoAccountFunds> {
+        let client = self.algod_client()?;
+        let address = Self::parse_address(account_address)?;
+        let info = match self.algod_call(|| client.account(&address)) {
+            Ok(info) => info,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("account_funds", &e.to_string()).into());
+            }
+            Err(e) => {
+                return Err(AlgoError::contextualize(
+                    &format!("failed to fetch account information for {account_address}"),
+                    e,
+                ));
+            }
+        };
+        Ok(AlgoAccountFunds {
+            amount: info.amount,
+            min_balance: info.min_balance,
+        })
     }
 
     /// Returns the µALGO balance of any on-chain address (need not be the signer).

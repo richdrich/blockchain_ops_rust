@@ -1,9 +1,9 @@
-//! Unit tests for the generic algod read primitives (`round`, `block_seed`,
+//! Unit tests for the generic algod read primitives (`round`, `block_seed`, `account_funds`,
 //! `suggested_params`) that need no running node: they assert the plain return
 //! shape and the `HostUnreachable` behaviour when the node is down.
 
 use algo_ops::error::{AlgoError, AlgoErrorKind};
-use algo_ops::{AlgoChainConfig, AlgoOps, AlgoSuggestedParams};
+use algo_ops::{AlgoAccountFunds, AlgoChainConfig, AlgoOps, AlgoSuggestedParams};
 
 // Config pointing at a port nothing is listening on, so every algod call fails
 // at the transport layer (connection refused) rather than reaching a node.
@@ -70,4 +70,47 @@ pub fn suggested_params_is_plain_and_serde_round_trips() {
     let json = serde_json::to_string(&params).expect("serialize AlgoSuggestedParams");
     let back: AlgoSuggestedParams = serde_json::from_str(&json).expect("deserialize round trip");
     assert_eq!(params, back);
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+pub fn account_funds_reports_host_unreachable_when_node_down() {
+    let (addr, _) = AlgoOps::generate_keypair();
+    let ops = AlgoOps::new_for_algorand(None, None, Some(unreachable_cfg()));
+    let err = ops
+        .account_funds(&addr)
+        .expect_err("account_funds should fail against an unreachable node");
+    assert_host_unreachable(&err, "account_funds");
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+pub fn account_funds_rejects_an_invalid_address() {
+    let ops = AlgoOps::new_for_algorand(None, None, Some(unreachable_cfg()));
+    assert!(
+        ops.account_funds("INVALID_ADDRESS").is_err(),
+        "expected an error for an invalid address"
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+pub fn spendable_is_the_balance_above_the_minimum() {
+    // the numbers a Sidewinder TestNet node account held when algod began rejecting its anchors:
+    // 500 µALGO above a minimum raised by its opt-ins, less than one more fee would leave.
+    let funds = AlgoAccountFunds {
+        amount: 693_000,
+        min_balance: 692_500,
+    };
+    assert_eq!(funds.spendable(), 500);
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
+pub fn spendable_is_zero_below_the_minimum() {
+    let funds = AlgoAccountFunds {
+        amount: 692_000,
+        min_balance: 692_500,
+    };
+    assert_eq!(funds.spendable(), 0);
 }
