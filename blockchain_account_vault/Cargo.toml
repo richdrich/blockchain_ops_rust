@@ -15,6 +15,10 @@ categories = ["cryptography", "command-line-utilities"]
 autotests = false
 
 [dependencies]
+# the base32 of a new account's address.
+data-encoding = "2"
+# derives a new account's public key from its seed.
+ed25519-dalek = "2"
 # AES-256-GCM: authenticates and encrypts a key file under the derived key.
 aes-gcm = "0.10"
 anyhow = "1"
@@ -29,13 +33,13 @@ clap = { version = "4.5", features = ["derive"] }
 printpdf = "0.7"
 # the QR code on each backup page.
 qrcode = "0.14"
-# a fresh random salt and nonce for every encryption.
+# a fresh random salt and nonce for every encryption, and a new account's seed.
 rand = "0.8"
 # reads the password from the terminal without echoing it.
 rpassword = "7"
 # the envelope is JSON, and an account key file is `{"address", "passphrase"}` JSON.
 serde_json = "1"
-# SHA-512/256 gives the mnemonic its checksum word, as Algorand's own mnemonic does.
+# SHA-512/256 gives the mnemonic its checksum word and an address its checksum, as in Algorand.
 sha2 = "0.10"
 
 [dev-dependencies]
@@ -57,7 +61,7 @@ name = "unit"
 path = "tests/unit.rs"
 
 # ── Binaries ─────────────────────────────────────────────────────────────────
-# `blockchain-account-vault`: seal a directory of key files, open one to standard output, or print the backups.
+# `blockchain-account-vault`: create a key file, seal a directory of them, open one to standard output, or print the backups.
 [[bin]]
 name = "blockchain-account-vault"
 path = "src/bin/blockchain-account-vault.rs"

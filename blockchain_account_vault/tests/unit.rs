@@ -8,6 +8,8 @@ mod support;
 
 #[path = "account_dir/reader.rs"]
 mod account_dir_reader;
+#[path = "account/generation.rs"]
+mod account_generation;
 #[path = "bin/blockchain_account_vault.rs"]
 mod bin_blockchain_account_vault;
 #[path = "envelope/encryption.rs"]
