@@ -271,6 +271,125 @@ fn print_fails_on_a_directory_with_no_key_files() {
     assert!(!output.status.success());
 }
 
+fn create(file: &Path, extra: &[&str], password: Option<&str>) -> std::process::Output {
+    let mut command = tool();
+    command.arg("create").arg(file).args(extra);
+    if let Some(password) = password {
+        command.write_stdin(format!("{password}\n"));
+    }
+    command.output().unwrap()
+}
+
+fn open_field(file: &Path, field: &str, password: Option<&str>) -> String {
+    let mut command = tool();
+    command.arg("open").arg(file).arg("--field").arg(field);
+    if let Some(password) = password {
+        command.write_stdin(format!("{password}\n"));
+    }
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    stdout(&output).trim().to_string()
+}
+
+#[test]
+fn create_writes_a_sealed_account_and_prints_only_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("REGISTRAR_SERVICE.json");
+
+    let output = create(&file, &[], Some(PASSWORD));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!file.exists(), "no plaintext may reach disk");
+    let sealed = dir.path().join("REGISTRAR_SERVICE.json.enc");
+    assert!(is_encrypted_envelope(&std::fs::read(&sealed).unwrap()));
+
+    let address = stdout(&output).trim().to_string();
+    assert_eq!(address.len(), 58);
+    assert_eq!(open_field(&file, "address", Some(PASSWORD)), address);
+    let passphrase = open_field(&file, "passphrase", Some(PASSWORD));
+    assert_eq!(passphrase.split_whitespace().count(), 25);
+    for shown in [stdout(&output), stderr(&output)] {
+        assert!(
+            !shown.contains(&passphrase),
+            "the passphrase must not be printed"
+        );
+    }
+}
+
+#[test]
+fn create_plain_writes_an_account_in_the_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("FREE_USER_FUNDER.json");
+
+    let output = create(&file, &["--plain"], None);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(open_field(&file, "address", None), stdout(&output).trim());
+}
+
+#[test]
+fn create_refuses_an_existing_key_file_in_either_form() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("APP_ADMIN.json"), &account_json());
+    let output = create(&dir.path().join("APP_ADMIN.json"), &["--plain"], None);
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("APP_ADMIN.json")).unwrap(),
+        account_json()
+    );
+
+    assert!(seal(dir.path(), &[], PASSWORD).status.success());
+    let output = create(&dir.path().join("APP_ADMIN.json"), &[], Some(PASSWORD));
+    assert!(!output.status.success());
+    assert!(!dir.path().join("APP_ADMIN.json").exists());
+}
+
+#[test]
+fn create_needs_the_password_the_directory_is_sealed_under() {
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("APP_ADMIN.json"), &account_json());
+    assert!(seal(dir.path(), &[], PASSWORD).status.success());
+
+    let file = dir.path().join("NEW_ROLE.json");
+    let output = create(&file, &[], Some("a different password"));
+    assert!(!output.status.success());
+    assert!(!file.exists() && !dir.path().join("NEW_ROLE.json.enc").exists());
+
+    let output = create(&file, &[], Some(PASSWORD));
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn create_with_a_prefix_finds_a_matching_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("VANITY.json");
+    let output = create(
+        &file,
+        &["--plain", "--prefix", "b7", "--threads", "2"],
+        None,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let address = stdout(&output).trim().to_string();
+    assert!(address.starts_with("B7"), "{address}");
+    assert_eq!(open_field(&file, "address", None), address);
+}
+
+#[test]
+fn create_rejects_a_prefix_no_address_can_have() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("VANITY.json");
+    let output = create(&file, &["--plain", "--prefix", "B1NG"], None);
+    assert!(!output.status.success());
+    assert!(!file.exists());
+}
+
+#[test]
+fn create_needs_a_json_name_in_an_existing_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = create(&dir.path().join("ROLE.key"), &["--plain"], None);
+    assert!(!output.status.success());
+    let output = create(&dir.path().join("missing/ROLE.json"), &["--plain"], None);
+    assert!(!output.status.success());
+}
+
 /// Every file beneath `dir` with its contents, sorted.
 fn walk(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
