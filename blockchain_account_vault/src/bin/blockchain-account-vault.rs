@@ -1,7 +1,8 @@
-//! `blockchain-account-vault`: seal a directory of key files under a password, open one to
-//! standard output, or print the paper backups.
+//! `blockchain-account-vault`: create an account key file, seal a directory of key files under a
+//! password, open one to standard output, or print the paper backups.
 //!
 //! ```text
+//! blockchain-account-vault create <FILE.json> [--prefix <CHARS>] [--same-password-as <FILE.enc>] [--plain] [--threads <N>]
 //! blockchain-account-vault seal <DIR> [--recursive] [--same-password-as <FILE.enc>]
 //! blockchain-account-vault open <FILE> [--field <NAME>]
 //! blockchain-account-vault print <DIR> --out <FILE.pdf> [--recursive]
@@ -13,10 +14,16 @@
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use blockchain_account_vault::account::{
+    expected_tries, find_vanity_account, generate_account, normalise_prefix,
+};
 use blockchain_account_vault::pdf::render_backup_pdf;
-use blockchain_account_vault::vault::{KeyFile, Vault, backup_page, discover, json_field};
+use blockchain_account_vault::vault::{
+    KeyFile, Vault, backup_page, discover, json_field, write_new_plain,
+};
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -32,12 +39,40 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Create a new Algorand account key file, sealed unless --plain, and print its address
+    Create(CreateArgs),
     /// Encrypt every unsealed key file (*.json, *.key) in a directory and delete the plaintext
     Seal(SealArgs),
     /// Write one key file's plaintext to standard output, decrypting it if it is sealed
     Open(OpenArgs),
     /// Render a backup sheet (QR code + mnemonic) for every key file in a directory
     Print(PrintArgs),
+}
+
+#[derive(Args, Debug)]
+struct CreateArgs {
+    /// The key file to create, named by its plaintext form (e.g. accounts/ROLE.json); its directory must exist
+    file: PathBuf,
+
+    /// Search for an address starting with these characters (A-Z, 2-7; each one makes the search 32 times longer)
+    #[arg(long, value_name = "CHARS")]
+    prefix: Option<String>,
+
+    /// A sealed file the password must also open, so the new file is under the same password as it
+    #[arg(
+        long = "same-password-as",
+        value_name = "FILE.enc",
+        conflicts_with = "plain"
+    )]
+    same_password_as: Option<PathBuf>,
+
+    /// Write the key file in the clear instead of sealing it
+    #[arg(long)]
+    plain: bool,
+
+    /// Threads for the prefix search (default: one per core)
+    #[arg(long, value_name = "N", requires = "prefix")]
+    threads: Option<usize>,
 }
 
 #[derive(Args, Debug)]
@@ -112,6 +147,70 @@ fn open_prompt() -> Result<String> {
     read_password("Password for sealed key files: ")
 }
 
+fn create(args: CreateArgs) -> Result<()> {
+    let file = KeyFile::at(args.file);
+    let plain_path = file.plain_path();
+    if plain_path.extension().and_then(|e| e.to_str()) != Some("json") {
+        bail!("an account key file is named <NAME>.json, not {plain_path:?}");
+    }
+    if file.exists() {
+        bail!("{plain_path:?} exists already (in plain or sealed form)");
+    }
+    let dir = match plain_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    if !dir.is_dir() {
+        bail!("{dir:?} is not a directory");
+    }
+    let prefix = args.prefix.as_deref().map(normalise_prefix).transpose()?;
+
+    // ask for the password before a search that may run for minutes, not after it.
+    let vault = if args.plain {
+        None
+    } else {
+        let vault = Vault::with_password(read_new_password()?);
+        // one directory, one password: it must open whatever is sealed here already.
+        if let Some(reference) = &args.same_password_as {
+            vault.check_opens(reference)?;
+        }
+        for sealed in discover(&dir, false)?.iter().filter(|f| f.is_sealed()) {
+            vault.check_opens(&sealed.sealed_path())?;
+        }
+        Some(vault)
+    };
+
+    let account = match &prefix {
+        None => generate_account(),
+        Some(prefix) => {
+            let threads = args.threads.unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+            });
+            eprintln!(
+                "searching for an address starting {prefix}: about {} tries on {threads} thread(s)",
+                expected_tries(prefix.len())
+            );
+            let started = Instant::now();
+            let found = find_vanity_account(prefix, threads)?;
+            eprintln!(
+                "found after {} tries in {:.1}s",
+                found.tries,
+                started.elapsed().as_secs_f64()
+            );
+            found.account
+        }
+    };
+
+    let bytes = account.to_key_file_json()?;
+    let written = match &vault {
+        Some(vault) => vault.seal_new(&file, &bytes)?,
+        None => write_new_plain(&file, &bytes)?,
+    };
+    eprintln!("created {}", written.display());
+    println!("{}", account.address);
+    Ok(())
+}
+
 fn seal(args: SealArgs) -> Result<()> {
     let files = discover(&args.dir, args.recursive)?;
     let unsealed: Vec<&KeyFile> = files.iter().filter(|file| !file.is_sealed()).collect();
@@ -178,6 +277,7 @@ fn print(args: PrintArgs) -> Result<()> {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Create(args) => create(args),
         Command::Seal(args) => seal(args),
         Command::Open(args) => open(args),
         Command::Print(args) => print(args),

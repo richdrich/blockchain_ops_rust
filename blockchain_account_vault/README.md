@@ -21,6 +21,26 @@ Its **sealed** form is the same name with `.enc` appended: `APP_ADMIN.json` beco
 cargo install blockchain_account_vault
 ```
 
+Create a new account key file, sealed. It prints the address (never the 25 words), and refuses a name that exists in either form. The password is asked for twice and must open every file already sealed in that directory; `--same-password-as` holds it to another file as `seal` does. The plaintext never reaches disk. Add `--plain` to write `<NAME>.json` in the clear instead. It doesn't fund the account:
+
+```
+blockchain-account-vault create ./mainnet_accounts/REGISTRAR_SERVICE.json
+```
+
+With `--prefix` it searches for an address that starts with the given characters, generating keys on every core (`--threads` to change that). An address is base32, so only `A`–`Z` and `2`–`7` are allowed, and lowercase is upper-cased. Each character multiplies the search by 32, and the password is asked for before the search starts:
+
+```
+blockchain-account-vault create ./mainnet_accounts/FREE_USER_FUNDER.json --prefix BING
+```
+
+| Prefix length | Expected tries | Time on 8 cores (about 160,000 tries a second) |
+|---|---|---|
+| 3 | 32,768 | under a second |
+| 4 | about 1 million | about 7 seconds |
+| 5 | about 34 million | about 4 minutes |
+| 6 | about 1.1 billion | about 2 hours |
+| 7 | about 34 billion | about 2.5 days |
+
 Seal every key file in a directory, and in the directories beneath it. The plaintext is deleted once each sealed file has been checked:
 
 ```
@@ -73,6 +93,7 @@ Argon2id (64 MiB, 3 passes) stretches the password into a 256-bit key, and AES-2
 
 | Module | What it does |
 |---|---|
+| `account` | Generate an Algorand account, or brute-force one whose address has a chosen prefix |
 | `envelope` | Encrypt and decrypt: the JSON envelope for files, and a compact binary blob for paper |
 | `account_dir` | Read named accounts (`NAME.json` or `NAME.json.enc`) from a directory, asking for the password once |
 | `vault` | Find key files, seal them, open one, build its backup page |

@@ -260,11 +260,51 @@ impl Vault {
         Ok(true)
     }
 
+    /// Write a new key file sealed under the vault's password, so its plaintext never reaches
+    /// disk. Fails if the key file exists in either form. The envelope is decrypted before it is
+    /// written and read back after, and a file that doesn't match is removed.
+    pub fn seal_new(&self, file: &KeyFile, bytes: &[u8]) -> Result<PathBuf> {
+        let password = self.required_password()?;
+        refuse_existing(file)?;
+        let envelope = encrypt_bytes(bytes, password)?;
+        if decrypt_bytes(&envelope, password)? != bytes {
+            bail!("sealing {:?} did not round-trip", file.plain_path());
+        }
+        let sealed = file.sealed_path();
+        write_private(&sealed, &envelope)?;
+        let written =
+            std::fs::read(&sealed).with_context(|| format!("failed to re-read {sealed:?}"))?;
+        if written != envelope {
+            // best effort: the file is new, so nothing else is lost.
+            let _ = std::fs::remove_file(&sealed);
+            bail!("{sealed:?} did not read back as written");
+        }
+        Ok(sealed)
+    }
+
     fn required_password(&self) -> Result<&str> {
         self.password
             .as_deref()
             .ok_or_else(|| anyhow!("the vault has no password yet"))
     }
+}
+
+/// Write a new key file in the clear, readable only by its owner. Fails if the key file exists
+/// in either form.
+pub fn write_new_plain(file: &KeyFile, bytes: &[u8]) -> Result<PathBuf> {
+    refuse_existing(file)?;
+    write_private(file.plain_path(), bytes)?;
+    Ok(file.plain_path().to_path_buf())
+}
+
+fn refuse_existing(file: &KeyFile) -> Result<()> {
+    if file.exists() {
+        bail!(
+            "{:?} exists already (in plain or sealed form); it is left as it is",
+            file.plain_path()
+        );
+    }
+    Ok(())
 }
 
 /// Write `bytes` to a new file that only its owner can read.

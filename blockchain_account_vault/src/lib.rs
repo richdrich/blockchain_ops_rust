@@ -4,6 +4,8 @@
 //! account as `{"address", "passphrase"}` JSON, or a bare seed. This crate keeps
 //! them encrypted between uses and prints a backup sheet for each.
 //!
+//! - [`account`]: new Algorand accounts, optionally with a chosen address
+//!   prefix.
 //! - [`envelope`]: the encryption. Argon2id stretches the password into a key,
 //!   and AES-256-GCM encrypts and authenticates the file under it.
 //! - [`account_dir`]: reads named accounts from a directory, sealed or not,
@@ -16,6 +18,7 @@
 //! The `blockchain-account-vault` tool drives these from the command line. The file formats
 //! are the ones `bingle_admin` writes, so the two are interchangeable.
 
+pub mod account;
 pub mod account_dir;
 pub mod envelope;
 pub mod mnemonic;
