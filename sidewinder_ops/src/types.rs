@@ -23,12 +23,22 @@ fn decode_b64(operation: &str, field: &str, value: &str) -> Result<Vec<u8>, Side
 }
 
 /// Lifecycle stage of a transaction (`stage` in the REST response).
+///
+/// `Failed`, `Rejected` and `Expired` are terminal: the transaction will never finalise, and the
+/// response's [`TxnError`] carries the node's reason. A caller should stop polling and must not
+/// re-submit the same transaction expecting a different outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Pending,
     Provisional,
     Final,
+    /// Reached selection but did not certify.
     Failed,
+    /// Refused before consensus: the sender is not enrolled or not funded, or the operation's access
+    /// predicate refused it.
+    Rejected,
+    /// Its validity window closed before it finalised.
+    Expired,
 }
 
 impl Stage {
@@ -38,11 +48,25 @@ impl Stage {
             "provisional" => Ok(Stage::Provisional),
             "final" => Ok(Stage::Final),
             "failed" => Ok(Stage::Failed),
+            "rejected" => Ok(Stage::Rejected),
+            "expired" => Ok(Stage::Expired),
             other => Err(SidewinderError::malformed_response(
                 operation,
                 &format!("unknown stage `{other}`"),
             )),
         }
+    }
+
+    /// True when the transaction has reached its final outcome — finalised (`Final`) or will never
+    /// finalise (`Failed`, `Rejected`, `Expired`) — so polling can stop.
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Stage::Pending | Stage::Provisional)
+    }
+
+    /// True when the transaction will never finalise (`Failed`, `Rejected`, `Expired`). Re-submitting
+    /// the same transaction will not change the outcome.
+    pub fn is_unsuccessful(self) -> bool {
+        matches!(self, Stage::Failed | Stage::Rejected | Stage::Expired)
     }
 }
 
@@ -52,6 +76,10 @@ pub enum Disposition {
     ReSelected,
     Escalated,
     Failed,
+    /// Refused before consensus (see [`Stage::Rejected`]).
+    Rejected,
+    /// Abandoned because its validity window closed (see [`Stage::Expired`]).
+    Expired,
 }
 
 impl Disposition {
@@ -60,6 +88,8 @@ impl Disposition {
             "reselected" => Ok(Disposition::ReSelected),
             "escalated" => Ok(Disposition::Escalated),
             "failed" => Ok(Disposition::Failed),
+            "rejected" => Ok(Disposition::Rejected),
+            "expired" => Ok(Disposition::Expired),
             other => Err(SidewinderError::malformed_response(
                 operation,
                 &format!("unknown disposition `{other}`"),
@@ -68,7 +98,8 @@ impl Disposition {
     }
 }
 
-/// A transaction failure (`error` in the pending response, present when `stage` is `Failed`).
+/// A transaction failure (`error` in the pending response, present when `stage` is `Failed`,
+/// `Rejected` or `Expired`). `message` is the node's reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxnError {
     pub message: String,
@@ -99,7 +130,7 @@ pub struct PendingTransaction {
     pub certificate: Option<Vec<u8>>,
     /// Merkle inclusion proof, present only when `proof` was requested. Opaque v0 bytes — not verified.
     pub proof: Option<Vec<u8>>,
-    /// Present when `stage` is `Failed`.
+    /// Present when `stage` is `Failed`, `Rejected` or `Expired`.
     pub error: Option<TxnError>,
     // No `anchor_round`: the v0 node does not emit it.
 }

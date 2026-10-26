@@ -12,11 +12,12 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{
-    DigitallySignedStruct, DistinguishedName, Error as RustlsError, ServerConfig, SignatureScheme,
+    CertificateError, DigitallySignedStruct, DistinguishedName, Error as RustlsError, ServerConfig,
+    SignatureScheme,
 };
 
 use crate::verify::{tls12, tls13, verify_identity_cert_inner};
-use crate::{IdentityCert, MembershipAuthority, Role};
+use crate::{IdentityCert, MembershipAuthority, Role, VerifyError};
 
 /// A `rustls` client-certificate verifier that authenticates the **client** by its Algorand identity.
 /// Client authentication is mandatory; trust is pinned to the on-chain identity, never a CA chain.
@@ -67,6 +68,24 @@ impl IdentityClientVerifier {
     }
 }
 
+/// Map a failed client-identity check to the `rustls` error that carries the right TLS alert.
+///
+/// A client that **proved** its identity and is simply not permitted ([`VerifyError::NotAuthorized`])
+/// is refused with `access_denied` — the alert TLS defines for "a valid certificate, but access control
+/// said no" — so the client can tell "this node does not admit my identity" apart from a network fault
+/// or a broken certificate, and stop retrying. `rustls` picks the alert from the error, and only
+/// [`CertificateError::ApplicationVerificationFailure`] maps to `access_denied`. Every other failure (an
+/// unparseable certificate, a missing or forged identity binding) keeps the descriptive general error,
+/// which `rustls` reports as `handshake_failure`.
+fn client_refusal(error: VerifyError) -> RustlsError {
+    match error {
+        VerifyError::NotAuthorized(_) => {
+            RustlsError::InvalidCertificate(CertificateError::ApplicationVerificationFailure)
+        }
+        other => RustlsError::General(other.to_string()),
+    }
+}
+
 impl ClientCertVerifier for IdentityClientVerifier {
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
         &[]
@@ -80,7 +99,7 @@ impl ClientCertVerifier for IdentityClientVerifier {
     ) -> Result<ClientCertVerified, RustlsError> {
         let address =
             verify_identity_cert_inner(end_entity, self.authority.as_ref(), self.required_role)
-                .map_err(|e| RustlsError::General(e.to_string()))?;
+                .map_err(client_refusal)?;
         *self
             .authenticated
             .lock()

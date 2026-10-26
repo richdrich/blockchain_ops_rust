@@ -111,3 +111,95 @@ fn watch_sets_wait_query() {
     assert!(req.path.contains("wait=5"), "path was {}", req.path);
     assert!(req.path.contains("proof=false"), "path was {}", req.path);
 }
+
+#[test]
+fn status_rejected_carries_reason_and_disposition() {
+    let node = MockNode::start(vec![Route::ok_json(
+        "GET",
+        "/v2/transactions/pending/TX4",
+        r#"{"txId":"TX4","stage":"rejected","error":{"message":"sender is not enrolled or its parent-chain account is not funded","disposition":"rejected"}}"#,
+    )]);
+    let client = client_for(&node.base_url());
+
+    let pending = client.status("TX4", false).expect("status");
+    assert_eq!(pending.stage, Stage::Rejected);
+    let err = pending.error.expect("an error body");
+    assert_eq!(
+        err.message,
+        "sender is not enrolled or its parent-chain account is not funded"
+    );
+    assert_eq!(err.disposition, Some(Disposition::Rejected));
+}
+
+#[test]
+fn status_expired_carries_reason_and_disposition() {
+    let node = MockNode::start(vec![Route::ok_json(
+        "GET",
+        "/v2/transactions/pending/TX5",
+        r#"{"txId":"TX5","stage":"expired","error":{"message":"validity window closed","disposition":"expired"}}"#,
+    )]);
+    let client = client_for(&node.base_url());
+
+    let pending = client.status("TX5", false).expect("status");
+    assert_eq!(pending.stage, Stage::Expired);
+    let err = pending.error.expect("an error body");
+    assert_eq!(err.message, "validity window closed");
+    assert_eq!(err.disposition, Some(Disposition::Expired));
+}
+
+#[test]
+fn watch_rejected_returns_terminal_outcome_not_error() {
+    let node = MockNode::start(vec![Route::ok_json(
+        "GET",
+        "/v2/transactions/pending/TX6",
+        r#"{"txId":"TX6","stage":"rejected","error":{"message":"rejected by the node's access policy","disposition":"rejected"}}"#,
+    )]);
+    let client = client_for(&node.base_url());
+
+    let pending = client
+        .watch("TX6", false, 5)
+        .expect("a rejected transaction is a terminal outcome, not a client error");
+    assert_eq!(pending.stage, Stage::Rejected);
+    assert!(pending.stage.is_terminal());
+    assert!(pending.stage.is_unsuccessful());
+    assert_eq!(
+        pending.error.expect("an error body").message,
+        "rejected by the node's access policy"
+    );
+}
+
+#[test]
+fn stage_terminal_classification() {
+    assert!(!Stage::Pending.is_terminal());
+    assert!(!Stage::Provisional.is_terminal());
+    for stage in [Stage::Final, Stage::Failed, Stage::Rejected, Stage::Expired] {
+        assert!(stage.is_terminal(), "{stage:?} should be terminal");
+    }
+    for stage in [Stage::Pending, Stage::Provisional, Stage::Final] {
+        assert!(
+            !stage.is_unsuccessful(),
+            "{stage:?} should not be unsuccessful"
+        );
+    }
+    for stage in [Stage::Failed, Stage::Rejected, Stage::Expired] {
+        assert!(stage.is_unsuccessful(), "{stage:?} should be unsuccessful");
+    }
+}
+
+#[test]
+fn status_unknown_stage_is_malformed() {
+    let node = MockNode::start(vec![Route::ok_json(
+        "GET",
+        "/v2/transactions/pending/TX7",
+        r#"{"txId":"TX7","stage":"bogus"}"#,
+    )]);
+    let client = client_for(&node.base_url());
+
+    let err = client
+        .status("TX7", false)
+        .expect_err("unknown stage should error");
+    let se = err
+        .downcast_ref::<sidewinder_ops::SidewinderError>()
+        .expect("a SidewinderError");
+    assert_eq!(se.kind, SidewinderErrorKind::MalformedResponse);
+}

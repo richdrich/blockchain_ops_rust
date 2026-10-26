@@ -304,6 +304,25 @@ pub struct AlgoSuggestedParams {
     pub genesis_id: String,
 }
 
+/// An account's balance and the minimum balance it must keep, both in µALGO — returned by
+/// [`AlgoOps::account_funds`]. Plain types only, like [`AlgoSuggestedParams`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlgoAccountFunds {
+    /// The account's total balance.
+    pub amount: u64,
+    /// The minimum balance algod requires the account to keep: the base minimum plus a step for
+    /// every asset and application it has opted into or created.
+    pub min_balance: u64,
+}
+
+impl AlgoAccountFunds {
+    /// What the account can spend on fees and payments before algod rejects a transaction for
+    /// taking it below its minimum: `amount - min_balance`, or zero when it is already below.
+    pub fn spendable(&self) -> u64 {
+        self.amount.saturating_sub(self.min_balance)
+    }
+}
+
 // Neutral view of a pending or confirmed transaction. Defined in `blockchain_ops` alongside the
 // `TransactionQueryOps` trait it is returned by; re-exported here so `algo_ops::ConfirmedTxn` and
 // `crate::ops::ConfirmedTxn` keep resolving.
@@ -565,6 +584,26 @@ pub trait KeyProvider: Send + Sync {
     fn save_private_key_object(&self, _address: &str, _passphrase: &str) {}
 }
 
+/// Which kind of request a retried call makes. It decides which HTTP statuses are retried and
+/// names the operation in warnings and errors, so an indexer failure is not reported as algod's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallKind {
+    /// A request to algod: a read, or a transaction submission whose retry the caller decides.
+    Algod,
+    /// An indexer read (search or lookup). Idempotent, so an HTTP 500 is also retried.
+    IndexerRead,
+}
+
+impl CallKind {
+    /// The operation name used in warnings and in the [`AlgoError`] a failed call returns.
+    pub fn operation(self) -> &'static str {
+        match self {
+            CallKind::Algod => "algod call",
+            CallKind::IndexerRead => "indexer search",
+        }
+    }
+}
+
 /// Main operations struct analogous to Kotlin's AlgoOps.
 #[derive(Debug, Clone)]
 pub struct AlgoOps {
@@ -575,7 +614,8 @@ pub struct AlgoOps {
     /// Behind an `Arc<Mutex<_>>` so `Clone`d handles share one bucket against the endpoint.
     rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
     /// Total outbound algod/indexer requests issued through this client. Incremented once per real
-    /// outbound request in [`algod_call`](Self::algod_call) (each page, each retry). Behind an
+    /// outbound request in [`algod_call`](Self::algod_call) or [`indexer_call`](Self::indexer_call)
+    /// (each page, each retry). Behind an
     /// `Arc<AtomicU64>` so `Clone`d handles share one counter, like `rate_limiter`. Always present
     /// (independent of any rate limit); seeded by [`with_initial_request_count`](Self::with_initial_request_count).
     requests_made: Arc<AtomicU64>,
@@ -814,7 +854,8 @@ impl AlgoOps {
     /// Apply the optional outbound limiters before a request, then charge the request against them.
     /// A no-op (returns `Ok`) when neither a rate limit nor a daily budget is configured, so the
     /// default call path is unaffected. Sits on the shared async→sync path in
-    /// [`algod_call`](Self::algod_call), so it governs both algod and indexer requests (including
+    /// [`algod_call`](Self::algod_call) and [`indexer_call`](Self::indexer_call), so it governs both
+    /// algod and indexer requests (including
     /// retries and each page of a paged fetch — every one is a real outbound request against the
     /// quota).
     ///
@@ -832,7 +873,7 @@ impl AlgoOps {
     /// [`now_unix_secs`](Self::now_unix_secs)); a backward clock jump just recomputes the window (see
     /// [`DailyBudget::roll`]). It is read once here so the check and the record agree on the window
     /// even across a day boundary crossed mid-call.
-    fn apply_rate_limit(&self) -> Result<()> {
+    fn apply_rate_limit(&self, operation: &str) -> Result<()> {
         // Read the wall-clock once, only when a daily budget is configured, so check and record
         // agree on the window.
         let now_secs = self.daily_budget.as_ref().map(|_| Self::now_unix_secs());
@@ -864,7 +905,7 @@ impl AlgoOps {
                 if reject {
                     // Fail fast with the precise wait; no token was consumed (poll only decrements
                     // when it returns zero), so the caller can retry once `wait` has elapsed.
-                    return Err(AlgoError::rate_limited("algod call", wait).into());
+                    return Err(AlgoError::rate_limited(operation, wait).into());
                 }
                 std::thread::sleep(wait);
             }
@@ -909,25 +950,41 @@ impl AlgoOps {
             .map_err(|e| anyhow!("failed to construct Indexer client: {e}"))
     }
 
-    // HTTP status codes that warrant a retry (transient/overload errors).
+    // HTTP status codes that warrant a retry (transient/overload errors) on any call.
     // `pub(crate)` in production; re-exported publicly only under `test-support`.
     #[cfg_attr(feature = "test-support", visibility::make(pub))]
     pub(crate) const RETRYABLE_STATUS_CODES: &'static [u16] = &[408, 425, 429, 502, 503, 504];
 
-    // Returns true if the algonaut error is a retryable transient HTTP error.
+    // Additional statuses retried only on indexer reads. An indexer read is idempotent, and the
+    // Nodely indexer intermittently answers a search with a 500 that succeeds when resent (#121).
+    // A 500 from algod (for example on transaction submission) stays non-retryable: the caller
+    // decides.
     #[cfg_attr(feature = "test-support", visibility::make(pub))]
-    pub(crate) fn is_retryable(e: &algonaut::Error) -> bool {
-        if let algonaut::Error::Request(req) = e
-            && let algonaut::error::RequestErrorDetails::Http { status, .. } = &req.details
-        {
-            return Self::RETRYABLE_STATUS_CODES.contains(status);
+    pub(crate) const INDEXER_READ_RETRYABLE_STATUS_CODES: &'static [u16] = &[500];
+
+    // Returns true if the algonaut error is a retryable transient HTTP error on an algod call.
+    // Only the tests use it; the call path asks `is_retryable_for` with the call's kind.
+    #[cfg(feature = "test-support")]
+    pub fn is_retryable(e: &algonaut::Error) -> bool {
+        Self::is_retryable_for(CallKind::Algod, e)
+    }
+
+    // Returns true if the algonaut error is a retryable transient HTTP error for a call of `kind`.
+    #[cfg_attr(feature = "test-support", visibility::make(pub))]
+    pub(crate) fn is_retryable_for(kind: CallKind, e: &algonaut::Error) -> bool {
+        match Self::http_status(e) {
+            Some(status) => {
+                Self::RETRYABLE_STATUS_CODES.contains(&status)
+                    || (kind == CallKind::IndexerRead
+                        && Self::INDEXER_READ_RETRYABLE_STATUS_CODES.contains(&status))
+            }
+            None => false,
         }
-        false
     }
 
     // Extract the HTTP status code from an algonaut error, or `None` for a transport-level
-    // failure (timeout, connection refused) that never received an HTTP response. Reads the same
-    // `RequestErrorDetails::Http` shape as `is_retryable`; used to surface a typed `AlgoError`
+    // failure (timeout, connection refused) that never received an HTTP response. Reads the
+    // `RequestErrorDetails::Http` shape; used to decide retries and to surface a typed `AlgoError`
     // carrying the status (e.g. a 403 quota stop) instead of an opaque message string.
     #[cfg_attr(feature = "test-support", visibility::make(pub))]
     pub(crate) fn http_status(e: &algonaut::Error) -> Option<u16> {
@@ -939,13 +996,37 @@ impl AlgoOps {
         None
     }
 
-    // Helper: run an algonaut async call and flatten the double-Result, with
-    // up to 3 retries (with exponential backoff: 1 s, 2 s, 4 s) on transient
-    // HTTP errors (408, 425, 429, 502, 503, 504).
-    //
-    // Accepts a closure rather than a bare future so the future can be
-    // reconstructed on each retry attempt (futures are consumed on first poll).
+    /// Run an algonaut algod call: flatten the double-`Result` and retry transient HTTP errors
+    /// (408, 425, 429, 502, 503, 504) up to 3 times with exponential backoff (1 s, 2 s, 4 s).
+    /// Errors name the operation `algod call`. Use [`indexer_call`](Self::indexer_call) for indexer
+    /// reads.
+    ///
+    /// Takes a closure rather than a bare future so the future can be rebuilt for each attempt
+    /// (a future is consumed on first poll).
     pub fn algod_call<T, F, Fut>(&self, make_fut: F) -> Result<T>
+    where
+        T: Send,
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<T, algonaut::Error>> + Send,
+    {
+        self.call_with_retry(CallKind::Algod, make_fut)
+    }
+
+    /// Run an algonaut indexer read as [`algod_call`](Self::algod_call) does, but also retry an
+    /// HTTP 500: an indexer read is idempotent, and the indexer can answer a search with a
+    /// transient 500 that succeeds when resent. Errors name the operation `indexer search`.
+    pub fn indexer_call<T, F, Fut>(&self, make_fut: F) -> Result<T>
+    where
+        T: Send,
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<T, algonaut::Error>> + Send,
+    {
+        self.call_with_retry(CallKind::IndexerRead, make_fut)
+    }
+
+    // The retry loop behind `algod_call` and `indexer_call`; `kind` decides which statuses retry
+    // and names the operation in warnings and errors.
+    fn call_with_retry<T, F, Fut>(&self, kind: CallKind, make_fut: F) -> Result<T>
     where
         T: Send,
         F: Fn() -> Fut,
@@ -954,23 +1035,25 @@ impl AlgoOps {
         const MAX_RETRIES: u32 = 3;
         const RETRY_BASE_MS: u64 = 1_000;
 
+        let operation = kind.operation();
         let mut attempt = 0u32;
         loop {
             // Throttle every outbound request, retries included: each is a real request against a
             // metered endpoint (and "failed requests count towards quota"). A no-op when unset. In
             // `Reject` mode an empty bucket short-circuits here with `AlgoError::rate_limited`
             // rather than sleeping — and, being surfaced by `?`, does not consume a retry attempt.
-            self.apply_rate_limit()?;
+            self.apply_rate_limit(operation)?;
             let result = self
-                .rt_block_on(make_fut())
+                .rt_block_on(operation, make_fut())
                 .map_err(|e| anyhow!("runtime error: {e}"))?;
 
             match result {
                 Ok(val) => return Ok(val),
-                Err(ref e) if attempt < MAX_RETRIES && Self::is_retryable(e) => {
+                Err(ref e) if attempt < MAX_RETRIES && Self::is_retryable_for(kind, e) => {
                     let delay = std::time::Duration::from_millis(RETRY_BASE_MS * (1u64 << attempt));
                     tracing::warn!(
-                        "algod transient error (attempt {}/{}), retrying in {:?}: {}",
+                        "{} transient error (attempt {}/{}), retrying in {:?}: {}",
+                        operation,
                         attempt + 1,
                         MAX_RETRIES,
                         delay,
@@ -980,13 +1063,13 @@ impl AlgoOps {
                     attempt += 1;
                 }
                 Err(e) => {
-                    if attempt >= MAX_RETRIES && Self::is_retryable(&e) {
-                        return Err(AlgoError::transient("algod call", &e.to_string()).into());
+                    if attempt >= MAX_RETRIES && Self::is_retryable_for(kind, &e) {
+                        return Err(AlgoError::transient(operation, &e.to_string()).into());
                     }
                     // Surface the HTTP status as a typed error so a caller can classify a hard
                     // rejection (e.g. a 403 quota stop) without string-matching the message.
                     if let Some(status) = Self::http_status(&e) {
-                        return Err(AlgoError::http("algod call", status, &e.to_string()).into());
+                        return Err(AlgoError::http(operation, status, &e.to_string()).into());
                     }
                     return Err(anyhow!("{e}"));
                 }
@@ -995,7 +1078,11 @@ impl AlgoOps {
     }
 
     // Helper: run an async future on a fresh current-thread Tokio runtime, bounded by `self.timeout`.
-    fn rt_block_on<T: Send>(&self, fut: impl Future<Output = T> + Send) -> Result<T> {
+    fn rt_block_on<T: Send>(
+        &self,
+        operation: &str,
+        fut: impl Future<Output = T> + Send,
+    ) -> Result<T> {
         let timeout = self.timeout;
         // Build a fresh current-thread runtime and drive `fut` on it. When a timeout is set, race the
         // future against a timer: on elapse the future is dropped, cancelling the in-flight request
@@ -1011,7 +1098,7 @@ impl AlgoOps {
                 match timeout {
                     Some(dur) => tokio::time::timeout(dur, fut)
                         .await
-                        .map_err(|_| anyhow!("algod call exceeded timeout of {dur:?}")),
+                        .map_err(|_| anyhow!("{operation} exceeded timeout of {dur:?}")),
                     None => Ok(fut.await),
                 }
             })
@@ -1774,6 +1861,36 @@ impl AlgoOps {
         Ok(Self::parse_holding_amount_from_account_value(&v, asset_id))
     }
 
+    /// Returns the balance of any on-chain address (need not be the signer) together with the
+    /// minimum balance algod requires it to keep, both in µALGO.
+    ///
+    /// The minimum grows with each asset or application the account opts into, so the balance
+    /// alone cannot tell whether an account can still pay a fee: algod rejects a transaction that
+    /// would leave `amount` below `min_balance`. One account read, the same as
+    /// [`microalgos_at`](Self::microalgos_at). Same unreachable-node behaviour as
+    /// [`round`](Self::round), and a typed [`AlgoError`] (a 403 quota stop, a rate-limit rejection)
+    /// is kept intact so a caller polling this can tell those from a transient failure.
+    pub fn account_funds(&self, account_address: &str) -> Result<AlgoAccountFunds> {
+        let client = self.algod_client()?;
+        let address = Self::parse_address(account_address)?;
+        let info = match self.algod_call(|| client.account(&address)) {
+            Ok(info) => info,
+            Err(e) if AlgoError::is_host_unreachable(&e) => {
+                return Err(AlgoError::unreachable("account_funds", &e.to_string()).into());
+            }
+            Err(e) => {
+                return Err(AlgoError::contextualize(
+                    &format!("failed to fetch account information for {account_address}"),
+                    e,
+                ));
+            }
+        };
+        Ok(AlgoAccountFunds {
+            amount: info.amount,
+            min_balance: info.min_balance,
+        })
+    }
+
     /// Returns the µALGO balance of any on-chain address (need not be the signer).
     pub fn microalgos_at(&self, account_address: &str) -> Result<u64> {
         let client = self.algod_client()?;
@@ -1827,7 +1944,7 @@ impl AlgoOps {
         // reuse the async->sync bridge; distinguish an unreachable host (connect/timeout) so the caller's
         // skip-when-down behaviour is preserved, from any other failure.
         let fetched: std::result::Result<String, (bool, String)> =
-            self.rt_block_on(async move {
+            self.rt_block_on("algod call", async move {
                 let response = reqwest::Client::new()
                     .get(url.as_str())
                     .header(token_header.as_str(), token.as_str())
@@ -2077,9 +2194,9 @@ impl AlgoOps {
         // parse the optional sender filter to an `Address` the indexer call takes by reference; it must
         // outlive the call below.
         let address = sender.map(Self::parse_address).transpose()?;
-        // `algod_call` is the shared async runner (current-thread runtime + retry/backoff); despite
-        // the name it drives any algonaut future, indexer calls included.
-        let resp = match self.algod_call(|| {
+        // `indexer_call` is the shared async runner (current-thread runtime + retry/backoff) for
+        // indexer reads.
+        let resp = match self.indexer_call(|| {
             client.search_for_transactions(
                 None,              // limit
                 next,              // next (pagination token)
@@ -2434,7 +2551,7 @@ impl AlgoOps {
         min_round: Option<u64>,
         next: Option<&str>,
     ) -> Result<TxnScanPage> {
-        let resp = match self.algod_call(|| {
+        let resp = match self.indexer_call(|| {
             client.search_for_transactions(
                 None,                          // limit
                 next,                          // next (pagination token)
@@ -2512,7 +2629,7 @@ impl AlgoOps {
     /// - an empty result still stamps `last_updated`, so an all-empty scan is not re-run every poll.
     ///
     /// Every fetched page (each full-scan page, each change-discovery page, each per-account re-read)
-    /// is issued through [`algod_call`](Self::algod_call), so it counts against the per-request counter
+    /// is issued through [`indexer_call`](Self::indexer_call), so it counts against the per-request counter
     /// ([`requests_made`](Self::requests_made)).
     ///
     /// **Locking:** the `cache` mutex is held for the whole refresh — every network round-trip — and
@@ -2710,7 +2827,7 @@ impl AlgoOps {
         app_id: u64,
         next: Option<&str>,
     ) -> Result<AccountScanPage> {
-        let resp = match self.algod_call(|| {
+        let resp = match self.indexer_call(|| {
             client.search_for_accounts(
                 None,                                // asset_id
                 None,                                // limit — the indexer default page size
@@ -2759,7 +2876,7 @@ impl AlgoOps {
         min_round: u64,
         next: Option<&str>,
     ) -> Result<ChangedAddressesPage> {
-        let resp = match self.algod_call(|| {
+        let resp = match self.indexer_call(|| {
             client.search_for_transactions(
                 None,                                // limit — the indexer default page size
                 next,                                // next (pagination token)
@@ -2842,7 +2959,7 @@ impl AlgoOps {
         address: &str,
     ) -> Result<Option<ScannedAccount>> {
         let addr = Self::parse_address(address)?;
-        let resp = match self.algod_call(|| {
+        let resp = match self.indexer_call(|| {
             client.lookup_account_by_id(&addr, None, None, Self::account_scan_excludes())
         }) {
             Ok(v) => v,

@@ -136,3 +136,38 @@ fn test_is_retryable_returns_false_for_non_request_error() {
     let e = algonaut::Error::Msg("some message".to_string());
     assert!(!AlgoOps::is_retryable(&e));
 }
+
+#[test]
+fn test_is_retryable_for_retries_500_only_on_indexer_reads() {
+    use algo_ops::CallKind;
+    assert!(AlgoOps::is_retryable_for(
+        CallKind::IndexerRead,
+        &make_http_error(500)
+    ));
+    assert!(!AlgoOps::is_retryable_for(
+        CallKind::Algod,
+        &make_http_error(500)
+    ));
+}
+
+#[test]
+fn test_is_retryable_for_indexer_reads_keeps_the_common_codes() {
+    use algo_ops::CallKind;
+    for &code in AlgoOps::RETRYABLE_STATUS_CODES {
+        assert!(
+            AlgoOps::is_retryable_for(CallKind::IndexerRead, &make_http_error(code)),
+            "{code} should be retryable on an indexer read"
+        );
+    }
+    assert!(!AlgoOps::is_retryable_for(
+        CallKind::IndexerRead,
+        &make_http_error(404)
+    ));
+}
+
+#[test]
+fn test_call_kind_names_the_operation() {
+    use algo_ops::CallKind;
+    assert_eq!(CallKind::Algod.operation(), "algod call");
+    assert_eq!(CallKind::IndexerRead.operation(), "indexer search");
+}

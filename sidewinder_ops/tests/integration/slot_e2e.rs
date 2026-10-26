@@ -121,14 +121,15 @@ fn set_and_finalize(
         .expect("a finalised transaction carries a result")
 }
 
-/// Poll `txid` on `client` until it reaches `final` (or `failed`), long-polling each request. A read
+/// Poll `txid` on `client` until it reaches a terminal stage (`final`, `failed`, `rejected` or
+/// `expired`), long-polling each request. A read
 /// node may not know a just-submitted txid yet, so a `not found` is tolerated as propagation lag
 /// until the deadline; any other error, or missing finality within [`FINALITY_TIMEOUT`], fails.
 fn poll_to_final(client: &SidewinderClient, txid: &str) -> PendingTransaction {
     let deadline = Instant::now() + FINALITY_TIMEOUT;
     loop {
         match client.watch(txid, false, 5) {
-            Ok(pending) if matches!(pending.stage, Stage::Final | Stage::Failed) => return pending,
+            Ok(pending) if pending.stage.is_terminal() => return pending,
             Ok(_) => {}
             Err(e) => {
                 let not_yet_visible = e

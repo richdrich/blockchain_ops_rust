@@ -7,7 +7,10 @@ use std::net::SocketAddr;
 
 use algo_ops::AlgoOps;
 use ed25519_dalek::SigningKey;
-use sidewinder_ops::{DiscoveredNode, EndpointRecord, SidewinderClient, SidewinderOps};
+use sidewinder_ops::{
+    DiscoveredNode, EndpointRecord, SidewinderClient, SidewinderError, SidewinderErrorKind,
+    SidewinderOps,
+};
 
 use crate::support::TEST_SEED_B64;
 use crate::support::tls_mock_node::{TlsMockNode, identity_address};
@@ -66,9 +69,19 @@ fn a_node_presenting_a_different_identity_is_rejected() {
     let target = discovered(node.addr(), resolved_but_wrong);
 
     let client = SidewinderClient::connect(client_algo(), &target).expect("client builds");
+    let error = client
+        .health()
+        .expect_err("a node whose identity does not match the pinned one is rejected");
+    // this is the client refusing the node, not the node refusing the client — so not `IdentityRefused`
+    // — and the reason the client's own verifier gave must survive into the message (#114).
+    let unreachable = error
+        .downcast_ref::<SidewinderError>()
+        .unwrap_or_else(|| panic!("a typed SidewinderError, got: {error:#}"));
+    assert_eq!(unreachable.kind, SidewinderErrorKind::HostUnreachable);
     assert!(
-        client.health().is_err(),
-        "a node whose identity does not match the pinned one must be rejected at the handshake"
+        unreachable.message.contains("not authorized"),
+        "the underlying cause is reported, not just that the send failed: {}",
+        unreachable.message
     );
 }
 
@@ -85,6 +98,42 @@ fn a_node_that_does_not_authorize_the_client_rejects_it() {
     assert!(
         client.health().is_err(),
         "a node that does not authorize the client's identity must reject the connection"
+    );
+}
+
+#[test]
+fn a_refused_identity_is_reported_as_such_once_and_not_retried() {
+    // #114: the node is reachable and answers — it just does not permit this client. That used to read
+    // as "error sending request for url (…)", be retried with backoff as a transient fault, and end as
+    // `HostUnreachable`. It must be one attempt and an error that says what happened and to whom.
+    let client_addr = identity_address(&client_key());
+    let node_key = SigningKey::from_bytes(&[200u8; 32]);
+    let node_addr = identity_address(&node_key);
+    let node = TlsMockNode::start(&node_key, Vec::new());
+    let target = discovered(node.addr(), node_addr);
+
+    let client = SidewinderClient::connect(client_algo(), &target).expect("client builds");
+    let error = client.params().expect_err("the node refuses this client");
+    let refused = error
+        .downcast_ref::<SidewinderError>()
+        .unwrap_or_else(|| panic!("a typed SidewinderError, got: {error:#}"));
+
+    assert_eq!(refused.kind, SidewinderErrorKind::IdentityRefused);
+    assert_eq!(refused.operation, "params");
+    assert!(
+        refused.message.contains(&client_addr),
+        "the error names the identity the node refused: {}",
+        refused.message
+    );
+    assert!(
+        refused.message.contains("permission bit"),
+        "the error says what to check: {}",
+        refused.message
+    );
+    assert_eq!(
+        node.connections(),
+        1,
+        "a refusal is an answer, not a transient fault: it is not retried"
     );
 }
 

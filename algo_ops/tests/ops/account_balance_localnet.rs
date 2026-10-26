@@ -43,6 +43,29 @@ pub fn account_balance_for_address10mil_returns_some() {
 
 #[test]
 #[cfg(not(target_os = "ios"))]
+pub fn account_funds_for_address10mil_matches_its_balance_and_holds_a_minimum() {
+    test_util::assert_localnet_available();
+    fund_test_accounts_or_panic();
+    let cfg = localnet_config();
+    let ops = AlgoOps::new_for_algorand(None, None, Some(cfg));
+    let funds = ops
+        .account_funds(ADDRESS_10MIL)
+        .expect("account_funds should not error on localnet");
+    let balance = ops
+        .microalgos_at(ADDRESS_10MIL)
+        .expect("microalgos_at should not error on localnet");
+    assert_eq!(funds.amount, balance, "the same read as microalgos_at");
+    // every Algorand account must keep at least the base minimum of 0.1 ALGO.
+    assert!(
+        funds.min_balance >= 100_000,
+        "min_balance {} below the base minimum",
+        funds.min_balance
+    );
+    assert_eq!(funds.spendable(), funds.amount - funds.min_balance);
+}
+
+#[test]
+#[cfg(not(target_os = "ios"))]
 pub fn global_state_for_address10mil_returns_some_vec() {
     test_util::assert_localnet_available();
     fund_test_accounts_or_panic();

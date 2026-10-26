@@ -1,9 +1,11 @@
 //! Cross-cutting behaviour: URL joining and the unreachable-host heuristic.
 
-use crate::support::TEST_TOKEN;
 use crate::support::mock_node::{MockNode, Route};
+use crate::support::{TEST_TOKEN, client_for};
 use algo_ops::AlgoOps;
-use sidewinder_ops::{SidewinderClient, SidewinderConfig, SidewinderError, SidewinderOps};
+use sidewinder_ops::{
+    SidewinderClient, SidewinderConfig, SidewinderError, SidewinderErrorKind, SidewinderOps,
+};
 
 #[test]
 fn trailing_slash_in_base_url_does_not_double_the_separator() {
@@ -29,4 +31,26 @@ fn looks_unreachable_classifies_connection_errors() {
     assert!(SidewinderError::looks_unreachable("operation timed out"));
     // A served HTTP error is not an unreachable host.
     assert!(!SidewinderError::looks_unreachable("400 Bad Request"));
+}
+
+#[test]
+fn an_unreachable_node_is_retried_and_reports_its_underlying_cause() {
+    // nothing listens on the port: a real network fault, still retried and still `HostUnreachable` —
+    // but the message must carry why the send failed, not only that it did (#114).
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("local addr")
+    };
+    let client = client_for(&format!("http://{closed}"));
+
+    let error = client.health().expect_err("nothing is listening");
+    let unreachable = error
+        .downcast_ref::<SidewinderError>()
+        .unwrap_or_else(|| panic!("a typed SidewinderError, got: {error:#}"));
+    assert_eq!(unreachable.kind, SidewinderErrorKind::HostUnreachable);
+    assert!(
+        unreachable.message.to_lowercase().contains("refused"),
+        "the cause beneath \"error sending request\" is reported: {}",
+        unreachable.message
+    );
 }

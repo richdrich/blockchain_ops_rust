@@ -10,7 +10,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -23,6 +23,9 @@ use sw_identity_tls::{StaticMembership, default_provider, generate};
 pub struct TlsMockNode {
     addr: SocketAddr,
     shutdown: Arc<AtomicBool>,
+    // how many TCP connections the node has accepted — one per client attempt, so a test can tell a
+    // single refused attempt from a retried one.
+    connections: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -43,11 +46,17 @@ impl TlsMockNode {
         let addr = listener.local_addr().expect("tls mock node local addr");
         let shutdown = Arc::new(AtomicBool::new(false));
 
+        let connections = Arc::new(AtomicUsize::new(0));
+
         let thread_shutdown = Arc::clone(&shutdown);
+        let thread_connections = Arc::clone(&connections);
         let handle = std::thread::spawn(move || {
             while !thread_shutdown.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => serve_connection(stream, config.clone()),
+                    Ok((stream, _)) => {
+                        thread_connections.fetch_add(1, Ordering::SeqCst);
+                        serve_connection(stream, config.clone())
+                    }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
@@ -59,8 +68,14 @@ impl TlsMockNode {
         TlsMockNode {
             addr,
             shutdown,
+            connections,
             handle: Some(handle),
         }
+    }
+
+    /// How many connections the node has accepted so far (one per client attempt).
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
     }
 
     /// The `https` base URL of this node, for example `https://127.0.0.1:54321`.
