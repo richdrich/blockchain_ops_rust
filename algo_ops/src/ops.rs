@@ -3867,10 +3867,10 @@ impl AlgoOps {
         self.sign_submit_and_fetch_logs(tx)
     }
 
-    /// Explicit synonym for [`call_app`]: every [`AppArg`] is sent as **raw bytes** and the caller is
+    /// Explicit synonym for [`call_app`](Self::call_app): every [`AppArg`] is sent as **raw bytes** and the caller is
     /// responsible for any ARC-4 framing — in particular the 2-byte big-endian length prefix a dynamic
     /// `byte[]` / `string` argument needs. This is the historical `call_app` contract; use it when you
-    /// pre-frame args yourself, or [`call_app_arc4_args`] to have the framing done for you.
+    /// pre-frame args yourself, or [`call_app_arc4_args`](Self::call_app_arc4_args) to have the framing done for you.
     pub fn call_app_raw_args(
         &self,
         app_id: u64,
@@ -3881,15 +3881,15 @@ impl AlgoOps {
         self.call_app(app_id, asset_id, method, args)
     }
 
-    /// ARC-4-encoding variant of [`call_app`]: **dynamic** ABI arguments (`byte[]`, `string`) are framed
+    /// ARC-4-encoding variant of [`call_app`](Self::call_app): **dynamic** ABI arguments (`byte[]`, `string`) are framed
     /// with their 2-byte big-endian length prefix, inferred from `method`'s signature, so the caller passes
     /// the plain payload. Fixed-size ARC-4 args (`address`, `uint64`, `byte[N]`, …) are unchanged. Prefer
-    /// this for any method with a dynamic argument — the raw [`call_app`] / [`call_app_raw_args`] leave the
+    /// this for any method with a dynamic argument — the raw [`call_app`](Self::call_app) / [`call_app_raw_args`](Self::call_app_raw_args) leave the
     /// framing to the caller, and an unframed dynamic arg is rejected by the contract's ABI decode.
     ///
     /// # Errors
     /// Errors if a dynamic argument exceeds the `byte[]`/`string` length field (`u16::MAX`), plus every
-    /// error [`call_app`] can return.
+    /// error [`call_app`](Self::call_app) can return.
     pub fn call_app_arc4_args(
         &self,
         app_id: u64,
