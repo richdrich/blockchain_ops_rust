@@ -119,3 +119,65 @@ fn builder_accepts_the_buy_bingle_shape() {
         "the group shape itself must be valid; got a validation error: {msg}"
     );
 }
+
+#[test]
+fn an_over_length_arc4_argument_fails_the_group_before_network() {
+    // a byte[] longer than its u16 length field can address cannot be framed; the builder records
+    // the error and sign_and_send fails before contacting the (unreachable) node, so nothing in the
+    // group is submitted.
+    let ops = offline_ops();
+    let err = ops
+        .transaction_group()
+        .payment("AAAA", 1000)
+        .call_app_arc4_args(
+            123,
+            Some("store_bytes(byte[])void"),
+            &[AppArg::Bytes(vec![0u8; 65_536])],
+        )
+        .sign_and_send()
+        .expect_err("an unframeable argument must fail the group");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("call_app_arc4_args") && msg.contains("u16 length limit"),
+        "expected the framing error, got: {msg}"
+    );
+}
+
+#[test]
+fn foreign_asset_attaches_to_an_arc4_app_call_leg() {
+    // the register(string) shape: asset transfer + an ARC-4 app call carrying a dynamic arg, with
+    // the asset as a foreign asset. Must pass pre-network validation and fail only at the node.
+    let ops = offline_ops();
+    let err = ops
+        .transaction_group()
+        .asset_transfer(456, 10, "AAAA")
+        .call_app_arc4_args(
+            123,
+            Some("register(string)void"),
+            &[AppArg::Utf8("alice".to_string())],
+        )
+        .foreign_asset(456)
+        .sign_and_send()
+        .expect_err("the offline node must make the broadcast fail");
+    let msg = err.to_string();
+    assert!(
+        !msg.contains("foreign_asset") && !msg.contains("call_app_arc4_args"),
+        "the group shape itself must be valid; got a validation error: {msg}"
+    );
+}
+
+#[test]
+fn foreign_asset_attaches_to_a_raw_args_app_call_leg() {
+    let ops = offline_ops();
+    let err = ops
+        .transaction_group()
+        .payment("AAAA", 1000)
+        .call_app_raw_args(123, Some("buy_bingle()void"), &[AppArg::Uint(1)])
+        .foreign_asset(456)
+        .sign_and_send()
+        .expect_err("the offline node must make the broadcast fail");
+    assert!(
+        !err.to_string().contains("foreign_asset"),
+        "call_app_raw_args adds an app-call leg like call_app; got: {err}"
+    );
+}

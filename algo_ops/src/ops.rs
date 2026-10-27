@@ -4475,6 +4475,37 @@ impl<'a> TransactionGroupBuilder<'a> {
         self
     }
 
+    /// Explicit synonym for [`call_app`](Self::call_app): every [`AppArg`] goes on the wire as **raw
+    /// bytes** and the caller does any ARC-4 framing (the 2-byte length prefix a dynamic `byte[]` /
+    /// `string` argument needs). Mirrors [`AlgoOps::call_app_raw_args`].
+    pub fn call_app_raw_args(self, app_id: u64, method: Option<&str>, args: &[AppArg]) -> Self {
+        self.call_app(app_id, method, args)
+    }
+
+    /// ARC-4-encoding variant of [`call_app`](Self::call_app): **dynamic** ABI arguments (`byte[]`,
+    /// `string`) are framed with their 2-byte big-endian length prefix, inferred from `method`'s
+    /// signature, so the caller passes the plain payload; fixed-size args are unchanged. Mirrors
+    /// [`AlgoOps::call_app_arc4_args`]. A dynamic argument longer than `u16::MAX` is recorded as a
+    /// builder error, so [`sign_and_send`](Self::sign_and_send) fails before any network I/O and
+    /// nothing in the group is submitted. Per-leg options ([`foreign_asset`](Self::foreign_asset),
+    /// [`foreign_app`](Self::foreign_app)) apply to this leg as to a `call_app` leg.
+    pub fn call_app_arc4_args(
+        mut self,
+        app_id: u64,
+        method: Option<&str>,
+        args: &[AppArg],
+    ) -> Self {
+        match arc4_frame_args(method, args) {
+            Ok(framed_args) => self.call_app(app_id, method, &framed_args),
+            Err(error) => {
+                self.set_error(format!("call_app_arc4_args(): {error}"));
+                // still add the leg, so a following foreign_asset()/foreign_app() attaches to it
+                // rather than reporting a second, misleading misuse.
+                self.call_app(app_id, method, args)
+            }
+        }
+    }
+
     /// Attach a foreign asset to the most recently added [`call_app`](Self::call_app) leg.
     pub fn foreign_asset(mut self, asset_id: u64) -> Self {
         match self.legs.last_mut() {
@@ -4670,7 +4701,12 @@ fn abi_arg_types(sig: &str) -> Option<Vec<String>> {
 /// ARC-4-frame `args` for `method`: a `byte[]` / `string` argument (dynamic ARC-4 types) is wrapped with
 /// its 2-byte big-endian length prefix; every other argument is passed through unchanged (fixed-size ARC-4
 /// types are already their own wire form, and an argument whose type can't be determined is left as-is —
-/// the raw contract). Used by [`AlgoOps::call_app_arc4_args`].
+/// the raw contract). Used by [`AlgoOps::call_app_arc4_args`] and
+/// [`TransactionGroupBuilder::call_app_arc4_args`].
+///
+/// Private in production; re-exported publicly only under `test-support` so the framing rules can be
+/// unit-tested without a node.
+#[cfg_attr(feature = "test-support", visibility::make(pub))]
 fn arc4_frame_args(method: Option<&str>, args: &[AppArg]) -> Result<Vec<AppArg>> {
     let types = method.and_then(abi_arg_types);
     args.iter()

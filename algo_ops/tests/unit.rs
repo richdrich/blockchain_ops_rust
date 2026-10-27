@@ -13,6 +13,8 @@ mod account_balance;
 mod address_derivation;
 #[path = "ops/algod_reads.rs"]
 mod algod_reads;
+#[path = "ops/arc4_frame_args.rs"]
+mod arc4_frame_args;
 #[path = "ops/asset_holding.rs"]
 mod asset_holding;
 #[path = "ops/block_header_seed.rs"]
