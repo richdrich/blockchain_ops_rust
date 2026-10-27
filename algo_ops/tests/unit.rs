@@ -49,6 +49,8 @@ mod extra_pages_for;
 
 #[path = "ops/app_asset_param_reads.rs"]
 mod app_asset_param_reads;
+#[path = "ops/app_creator_cache.rs"]
+mod app_creator_cache;
 #[path = "ops/indexer_retry.rs"]
 mod indexer_retry;
 #[path = "ops/reserve_helpers.rs"]

@@ -13,6 +13,8 @@ mod support;
 mod account_balance_localnet;
 #[path = "ops/algod_reads_localnet.rs"]
 mod algod_reads_localnet;
+#[path = "ops/app_creator_cache_localnet.rs"]
+mod app_creator_cache_localnet;
 #[path = "ops/asset_clawback_creator_localnet.rs"]
 mod asset_clawback_creator_localnet;
 #[path = "ops/asset_configured_creator_localnet.rs"]
