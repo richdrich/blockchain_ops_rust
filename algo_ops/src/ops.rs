@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -628,6 +628,11 @@ pub struct AlgoOps {
     /// ([`rt_block_on`](Self::rt_block_on)) so it bounds **every** call (both the `algonaut` client and
     /// the raw-`reqwest` reads), and cancels a stalled request rather than blocking the caller forever.
     timeout: Option<Duration>,
+    /// Each application's creator address, keyed by app id, filled on first lookup by
+    /// [`app_creator`](Self::app_creator) (which every app call uses to list the creator as a foreign
+    /// account). An app's creator never changes, so an entry never goes stale and has no expiry. Behind
+    /// an `Arc<Mutex<_>>` so `Clone`d handles share one cache, like `rate_limiter`.
+    app_creators: Arc<Mutex<HashMap<u64, String>>>,
 }
 
 impl AlgoOps {
@@ -730,6 +735,7 @@ impl AlgoOps {
             requests_made: Arc::new(AtomicU64::new(0)),
             daily_budget,
             timeout: None,
+            app_creators: Arc::new(Mutex::new(HashMap::new())),
         };
 
         // If no address was provided but we have a passphrase, derive the address immediately.
@@ -3359,10 +3365,34 @@ impl AlgoOps {
 
     /// The creator address of `app_id` from its on-chain application parameters. Errors if the app
     /// does not exist / cannot be read.
+    ///
+    /// Cached per client (shared by `Clone`d handles): an app's creator never changes, so only the
+    /// first lookup for an `app_id` reads algod; later ones make no request. A failed lookup is not
+    /// cached. One consequence: if the app is deleted after its creator was cached, an app call is
+    /// built and submitted and then rejected on chain, rather than failing before submission.
     pub fn app_creator(&self, app_id: u64) -> Result<String> {
         if app_id == 0 {
             bail!("app_id must be > 0");
         }
+        if let Some(creator) = self.cached_app_creator(app_id) {
+            return Ok(creator);
+        }
+        let creator = self.fetch_app_creator(app_id)?;
+        self.app_creators
+            .lock()
+            .map_err(|_| anyhow!("app creator cache lock poisoned"))?
+            .insert(app_id, creator.clone());
+        Ok(creator)
+    }
+
+    /// `app_id`'s creator from the per-client cache, or `None` if it has not been looked up yet (or
+    /// the cache lock is poisoned, in which case the caller simply re-reads algod).
+    fn cached_app_creator(&self, app_id: u64) -> Option<String> {
+        self.app_creators.lock().ok()?.get(&app_id).cloned()
+    }
+
+    /// Read `app_id`'s creator from algod (one request), bypassing the cache.
+    fn fetch_app_creator(&self, app_id: u64) -> Result<String> {
         let client = self.algod_client()?;
         let app_info = self
             .algod_call(|| client.app(algonaut::core::AppId(app_id)))
@@ -3844,6 +3874,10 @@ impl AlgoOps {
         Ok(Some(app_id))
     }
 
+    /// Call `app_id` (optionally the ARC-4 `method`) with `args` sent as raw bytes, signed by this
+    /// client's account; waits for confirmation and returns `(txid, logs)`. The app's creator is
+    /// listed as a foreign account; it is looked up once per app and cached (see
+    /// [`app_creator`](Self::app_creator)), so repeat calls to the same app make no extra read for it.
     pub fn call_app(
         &self,
         app_id: u64,
@@ -4048,19 +4082,11 @@ impl AlgoOps {
         if app_id == 0 {
             bail!("app_id must be > 0");
         }
-        let client = self.algod_client()?;
-        let app_info = self
-            .algod_call(|| client.app(algonaut::core::AppId(app_id)))
-            .map_err(|e| anyhow!("failed to fetch application information: {e}"))?;
-        let app_info_v = serde_json::to_value(&app_info)
-            .map_err(|e| anyhow!("failed to serialize application info: {e}"))?;
-        let creator_str = app_info_v
-            .get("params")
-            .and_then(|p| p.get("creator").and_then(|x| x.as_str()))
-            .or_else(|| app_info_v.get("creator").and_then(|x| x.as_str()))
-            .ok_or_else(|| anyhow!("application info did not contain creator field"))?;
-        let creator = Self::parse_address(creator_str)?;
+        // the creator goes in the foreign-accounts array; cached per client (#132), so only the first
+        // call to an app reads its application information.
+        let creator = Self::parse_address(&self.app_creator(app_id)?)?;
         let sender = self.require_address()?;
+        let client = self.algod_client()?;
 
         let mut app_args: Vec<Vec<u8>> = Vec::new();
         if let Some(sig) = method {
