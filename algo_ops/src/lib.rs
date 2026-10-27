@@ -24,6 +24,11 @@ pub use ops::{
 #[cfg(feature = "test-support")]
 pub use ops::{DailyBudget, RateLimiter};
 
+// The ARC-4 argument framing is internal, re-exported only under `test-support` so its rules (which
+// args get a length prefix) can be unit-tested without a node.
+#[cfg(feature = "test-support")]
+pub use ops::arc4_frame_args;
+
 use anyhow::Result;
 use blockchain_ops::{AssetOps, BlockChainOps};
 
