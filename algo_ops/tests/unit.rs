@@ -53,6 +53,8 @@ mod app_asset_param_reads;
 mod app_creator_cache;
 #[path = "ops/indexer_retry.rs"]
 mod indexer_retry;
+#[path = "ops/opted_in_closed_account.rs"]
+mod opted_in_closed_account;
 #[path = "ops/reserve_helpers.rs"]
 mod reserve_helpers;
 #[path = "ops/retry_logic.rs"]
