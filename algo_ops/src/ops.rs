@@ -2957,7 +2957,10 @@ impl AlgoOps {
 
     /// Re-read one account and return it as a [`ScannedAccount`] **only while it still holds local
     /// state for `app_id`** — `None` once the account has opted out (or was deleted), so the caller
-    /// drops it from the cache. Surfaces `AlgoError::HostUnreachable` when the indexer is down.
+    /// drops it from the cache. A closed account is gone from the indexer's current state, which
+    /// answers the lookup with HTTP 404, so that 404 is `None` too: failing here would stop the
+    /// watermark advancing and fail every later refresh on the same account. Other errors still
+    /// fail the refresh. Surfaces `AlgoError::HostUnreachable` when the indexer is down.
     fn lookup_opted_in_account(
         &self,
         client: &algonaut::Indexer,
@@ -2969,6 +2972,12 @@ impl AlgoOps {
             client.lookup_account_by_id(&addr, None, None, Self::account_scan_excludes())
         }) {
             Ok(v) => v,
+            Err(e)
+                if e.downcast_ref::<AlgoError>()
+                    .is_some_and(|algo_err| algo_err.status() == Some(404)) =>
+            {
+                return Ok(None);
+            }
             Err(e) if AlgoError::is_host_unreachable(&e) => {
                 return Err(AlgoError::unreachable("lookup_account_by_id", &e.to_string()).into());
             }
