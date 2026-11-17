@@ -1,6 +1,6 @@
 [package]
 name = "blockchain_keystore"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 description = "Wrap and unwrap a data key under a password, a caller-supplied secret, or (later) a key held by platform hardware."
 license = "MIT OR Apache-2.0"

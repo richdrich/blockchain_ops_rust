@@ -1,6 +1,6 @@
 [package]
 name = "blockchain_account_vault"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 description = "Password-sealed key files (Argon2id + AES-256-GCM) with printable paper backups, for Algorand accounts and other small secrets."
 license = "MIT OR Apache-2.0"
@@ -48,7 +48,7 @@ rand = "0.8"
 # reads the password from the terminal without echoing it.
 rpassword = { version = "7", optional = true }
 # the key-wrapping interface `sealed_store` slots are built on.
-blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.7" }
+blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.8" }
 # HKDF-SHA256 and HMAC-SHA256: `sealed_store` derives its payload and header keys from the data
 # key, and `recovery` derives a slot secret from a recovery phrase.
 hkdf = "0.12"
@@ -62,7 +62,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 # the `sealed_store` tests use its in-memory fake wrapper.
-blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.7", features = ["test-support"] }
+blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.8", features = ["test-support"] }
 # the fixed test vectors are written as hex.
 hex = "0.4"
 # the mnemonic tests assert that a 32-byte key encodes to exactly algonaut's 25 words.
