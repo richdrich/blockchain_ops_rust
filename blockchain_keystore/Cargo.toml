@@ -1,0 +1,51 @@
+[package]
+name = "blockchain_keystore"
+version = "0.9.7"
+edition = "2024"
+description = "Wrap and unwrap a data key under a password, a caller-supplied secret, or (later) a key held by platform hardware."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/richdrich/blockchain_ops_rust"
+homepage = "https://github.com/richdrich/blockchain_ops_rust"
+documentation = "https://docs.rs/blockchain_keystore"
+readme = "README.md"
+keywords = ["encryption", "keys", "keychain", "tpm", "wrapping"]
+categories = ["cryptography"]
+# Test targets are declared explicitly below (per project guidelines: every test
+# is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
+autotests = false
+
+[features]
+# `FakeWrapper`: an in-memory wrapper for consumers' unit tests. Never enable it in
+# production builds.
+test-support = []
+
+[dependencies]
+# AES-256-GCM: encrypts and authenticates the data key under the wrapping key.
+aes-gcm = "0.10"
+# Argon2id: the memory-hard derivation of a wrapping key from a password.
+argon2 = "0.5"
+# HKDF-SHA256: derives the wrapping key from a caller-supplied secret, so the
+# secret itself is never used directly as an AES key.
+hkdf = "0.12"
+sha2 = "0.10"
+# a fresh random salt and nonce for every wrap, and new data keys.
+rand = "0.8"
+# clears data keys, passwords and secrets from memory when they are dropped.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+# the unit tests use the `test-support` fake, so they depend on this crate with
+# that feature turned on.
+blockchain_keystore = { path = ".", features = ["test-support"] }
+# the fixed test vectors are written as hex.
+hex = "0.4"
+
+[lints]
+workspace = true
+
+# ── Test targets ─────────────────────────────────────────────────────────────
+# One `unit` bucket: nothing here needs an external service. Each file under
+# `tests/<module>/` mirrors a `src` module and is included from `tests/unit.rs`.
+[[test]]
+name = "unit"
+path = "tests/unit.rs"

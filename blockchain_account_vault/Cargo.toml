@@ -1,6 +1,6 @@
 [package]
 name = "blockchain_account_vault"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2024"
 description = "Password-sealed key files (Argon2id + AES-256-GCM) with printable paper backups, for Algorand accounts and other small secrets."
 license = "MIT OR Apache-2.0"
@@ -13,6 +13,16 @@ categories = ["cryptography", "command-line-utilities"]
 # Test targets are declared explicitly below (per project guidelines: every test
 # is referenced in Cargo.toml), so disable auto-discovery of `tests/*.rs`.
 autotests = false
+
+[features]
+# Both on by default, so `cargo install blockchain_account_vault` builds the tool as before.
+# A library user that only needs the envelope, `sealed_store`, `recovery`, `mnemonic` and `account`
+# turns default features off and doesn't pull in the tool's dependencies.
+default = ["cli", "backup"]
+# the `blockchain-account-vault` command-line tool: argument parsing and password prompts.
+cli = ["dep:clap", "dep:rpassword"]
+# printable paper backups: the `pdf` module and `vault::backup_page`.
+backup = ["dep:printpdf", "dep:qrcode"]
 
 [dependencies]
 # the base32 of a new account's address.
@@ -28,21 +38,33 @@ argon2 = "0.5"
 # the secret as base64.
 base64 = "0.22"
 # the `blockchain-account-vault` tool's argument parsing.
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 # renders the paper backup: one page per key file.
-printpdf = "0.7"
+printpdf = { version = "0.7", optional = true }
 # the QR code on each backup page.
-qrcode = "0.14"
+qrcode = { version = "0.14", optional = true }
 # a fresh random salt and nonce for every encryption, and a new account's seed.
 rand = "0.8"
 # reads the password from the terminal without echoing it.
-rpassword = "7"
+rpassword = { version = "7", optional = true }
+# the key-wrapping interface `sealed_store` slots are built on.
+blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.7" }
+# HKDF-SHA256 and HMAC-SHA256: `sealed_store` derives its payload and header keys from the data
+# key, and `recovery` derives a slot secret from a recovery phrase.
+hkdf = "0.12"
+hmac = "0.12"
+# clears data keys and derived secrets from memory when they are dropped.
+zeroize = "1"
 # the envelope is JSON, and an account key file is `{"address", "passphrase"}` JSON.
 serde_json = "1"
 # SHA-512/256 gives the mnemonic its checksum word and an address its checksum, as in Algorand.
 sha2 = "0.10"
 
 [dev-dependencies]
+# the `sealed_store` tests use its in-memory fake wrapper.
+blockchain_keystore = { path = "../blockchain_keystore", version = "0.9.7", features = ["test-support"] }
+# the fixed test vectors are written as hex.
+hex = "0.4"
 # the mnemonic tests assert that a 32-byte key encodes to exactly algonaut's 25 words.
 algonaut = "0.8.0"
 # drives the `blockchain-account-vault` binary end to end.
@@ -65,3 +87,4 @@ path = "tests/unit.rs"
 [[bin]]
 name = "blockchain-account-vault"
 path = "src/bin/blockchain-account-vault.rs"
+required-features = ["cli", "backup"]

@@ -15,8 +15,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
-use crate::envelope::{decrypt_bytes, encrypt_bytes, encrypt_secret, is_encrypted_envelope};
+#[cfg(feature = "backup")]
+use crate::envelope::encrypt_secret;
+use crate::envelope::{decrypt_bytes, encrypt_bytes, is_encrypted_envelope};
+#[cfg(feature = "backup")]
 use crate::mnemonic::{bytes_to_mnemonic, mnemonic_to_bytes};
+#[cfg(feature = "backup")]
 use crate::pdf::BackupPage;
 
 /// Appended to a key file's name to give its sealed form.
@@ -345,12 +349,13 @@ pub fn json_field(bytes: &[u8], field: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("the key file has no string field '{field}'"))
 }
 
-/// Build the backup page for a key file's plaintext `bytes`.
+/// Build the backup page for a key file's plaintext `bytes`. Needs the `backup` feature.
 ///
 /// An account's page carries its address and its 32-byte private key. Any other
 /// file's page carries the file's bytes as they are. With `password` the secret
 /// on the page is encrypted under it first, which is what a sealed file gets; a
 /// file kept in the clear is printed in the clear.
+#[cfg(feature = "backup")]
 pub fn backup_page(name: &str, bytes: &[u8], password: Option<&str>) -> Result<BackupPage> {
     let (address, secret) = match account_fields(bytes) {
         Some((address, passphrase)) => {

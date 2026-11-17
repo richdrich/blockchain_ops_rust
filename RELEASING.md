@@ -25,8 +25,8 @@ order:
 3. **Merges it** with `--admin` (the owner cannot self-approve a review gate, and
    the checks are already green). The push to `deployed` triggers
    [`deploy.yml`](.github/workflows/deploy.yml), which re-runs every gate, then
-   publishes `blockchain_ops`, `algo_ops`, `sw_identity_tls`, `sidewinder_ops`, then
-   `blockchain_account_vault` to crates.io via Trusted Publishing (OpenID Connect / OIDC — no stored registry
+   publishes `blockchain_ops`, `algo_ops`, `sw_identity_tls`, `sidewinder_ops`,
+   `blockchain_keystore`, then `blockchain_account_vault` to crates.io via Trusted Publishing (OpenID Connect / OIDC — no stored registry
    token; each is published before the crates that depend on it), and tags the
    commit `vX.Y.Z`.
 4. **Waits for that deploy run to succeed**, then **bumps `master` to the next
@@ -93,8 +93,20 @@ manual, after which continuous integration (CI) is token-free.
    publish step fails when it reaches `blockchain_account_vault`, after the other four have
    been published.
 
+   **`blockchain_keystore`** needs the same one-time bootstrap. It depends on none of
+   the other workspace crates; publish it before `blockchain_account_vault`, which
+   will depend on it:
+
+   ```
+   cargo publish -p blockchain_keystore
+   ```
+
+   Until that is done and its Trusted Publisher is configured, the deploy job's
+   publish step fails when it reaches `blockchain_keystore`, after the four crates
+   before it have been published.
+
 2. **Configure Trusted Publishing** for each crate on crates.io — `blockchain_ops`,
-   `algo_ops`, `sw_identity_tls`, `sidewinder_ops`, and `blockchain_account_vault` (crate → Settings → Trusted Publishing):
+   `algo_ops`, `sw_identity_tls`, `sidewinder_ops`, `blockchain_keystore`, and `blockchain_account_vault` (crate → Settings → Trusted Publishing):
    GitHub repository `richdrich/blockchain_ops_rust`, workflow `deploy.yml`. After
    this the deploy job authenticates via OIDC and no registry token is ever stored.
 

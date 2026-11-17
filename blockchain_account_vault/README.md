@@ -89,6 +89,32 @@ Argon2id (64 MiB, 3 passes) stretches the password into a 256-bit key, and AES-2
 
 `BINGLE_INSECURE_FAST_KDF` in the environment lowers the cost to the minimum for new encryptions. It exists so test suites can seal many files quickly. Never set it for real keys.
 
+## Sealed stores
+
+`sealed_store` seals a payload (a state file, say) under a random data key, and keeps that key wrapped once per **slot**. A slot is a label and a `blockchain_keystore` wrapping: a password (`SoftwareWrapper`), a secret a platform store hands over (`SecretWrapper`), and in later versions a key held in hardware. Any one slot opens the store.
+
+- `SealedStore::seal(payload, &[("password", &pw), ("device", &dev)])` returns the store and its data key.
+- `open(label, wrapper)` opens with a named slot; `open_any(wrapper)` tries every slot made by that wrapper's backend. A slot whose key is unavailable now (a locked device, say) returns that error rather than being skipped.
+- `reseal(data_key, payload)` writes a new payload under the same key and slots, as on every save.
+- `add_slot` and `remove_slot` need the data key, never re-encrypt the payload, and refuse to remove the last slot.
+
+Two keys come from the data key with HKDF-SHA256: one encrypts the payload with AES-256-GCM, the other is an HMAC-SHA256 over the header (version and slots). Without the data key, no one can add, remove, reorder or swap in a slot. The layout, little-endian:
+
+```text
+version (1) | slot count (1) | slots | header MAC (32) | nonce (12) | ciphertext (payload + 16 tag)
+slot: label length (1) | label (UTF-8) | record length (2) | blockchain_keystore record
+```
+
+`recovery::recovery_secret(mnemonic, label)` turns an Algorand 25-word phrase into a 32-byte slot secret (HKDF-SHA256 over the seed, with the label as info), for a recovery slot that opens a store copied to a new device. Use a different label for each purpose.
+
+## Features
+
+`cli` (the tool's argument parsing and password prompts) and `backup` (PDF backup pages: `pdf` and `vault::backup_page`) are on by default, so `cargo install` is unchanged. A library user that needs only `envelope`, `sealed_store`, `recovery`, `mnemonic`, `account`, `account_dir` and `vault` turns them off, and doesn't pull in `clap`, `rpassword`, `printpdf` or `qrcode`:
+
+```
+blockchain_account_vault = { version = "0.9", default-features = false }
+```
+
 ## The library
 
 | Module | What it does |
@@ -98,4 +124,6 @@ Argon2id (64 MiB, 3 passes) stretches the password into a 256-bit key, and AES-2
 | `account_dir` | Read named accounts (`NAME.json` or `NAME.json.enc`) from a directory, asking for the password once |
 | `vault` | Find key files, seal them, open one, build its backup page |
 | `mnemonic` | Algorand-style word encoding for any byte length |
-| `pdf` | Render backup pages |
+| `sealed_store` | A payload under one data key, wrapped by several slots |
+| `recovery` | A slot secret derived from an Algorand recovery phrase |
+| `pdf` | Render backup pages (feature `backup`) |
