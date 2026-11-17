@@ -13,7 +13,11 @@
 //! - [`vault`]: finds the key files in a directory, seals them, opens one, and
 //!   builds its backup page.
 //! - [`mnemonic`]: writes any bytes as Algorand-style words.
-//! - [`pdf`]: renders the backup pages.
+//! - [`sealed_store`]: a payload under one data key, wrapped once per slot
+//!   (password, platform key, recovery secret), so any slot opens it and slots
+//!   can be added or removed without re-encrypting the payload.
+//! - [`recovery`]: derives a slot secret from an Algorand recovery phrase.
+//! - `pdf`: renders the backup pages (feature `backup`).
 //!
 //! The `blockchain-account-vault` tool drives these from the command line. The file formats
 //! are the ones `bingle_admin` writes, so the two are interchangeable.
@@ -22,5 +26,8 @@ pub mod account;
 pub mod account_dir;
 pub mod envelope;
 pub mod mnemonic;
+#[cfg(feature = "backup")]
 pub mod pdf;
+pub mod recovery;
+pub mod sealed_store;
 pub mod vault;

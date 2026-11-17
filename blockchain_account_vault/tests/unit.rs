@@ -10,6 +10,7 @@ mod support;
 mod account_dir_reader;
 #[path = "account/generation.rs"]
 mod account_generation;
+#[cfg(all(feature = "cli", feature = "backup"))]
 #[path = "bin/blockchain_account_vault.rs"]
 mod bin_blockchain_account_vault;
 #[path = "envelope/encryption.rs"]
@@ -18,7 +19,14 @@ mod envelope_encryption;
 mod envelope_fixed_vector;
 #[path = "mnemonic/encoding.rs"]
 mod mnemonic_encoding;
+#[cfg(feature = "backup")]
 #[path = "pdf/render.rs"]
 mod pdf_render;
+#[path = "recovery/derive.rs"]
+mod recovery_derive;
+#[path = "sealed_store/fixed_vector.rs"]
+mod sealed_store_fixed_vector;
+#[path = "sealed_store/slots.rs"]
+mod sealed_store_slots;
 #[path = "vault/key_files.rs"]
 mod vault_key_files;

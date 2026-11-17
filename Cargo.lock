@@ -534,6 +534,10 @@ dependencies = [
  "clap",
  "data-encoding",
  "ed25519-dalek",
+ "hardware_keystore",
+ "hex",
+ "hkdf",
+ "hmac",
  "printpdf",
  "qrcode",
  "rand 0.8.7",
@@ -541,6 +545,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
