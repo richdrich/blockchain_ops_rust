@@ -52,6 +52,11 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # blockchain_account_vault must build as a library without its tool features, and then
+      # must not depend on the tool-only crates (a mobile app links it this way).
+      - name: Vault library without tool dependencies
+        run: cargo check -p blockchain_account_vault --no-default-features && ! cargo tree -p blockchain_account_vault --no-default-features -e normal --prefix none | sed 's/ .*//' | grep -qxE 'clap|rpassword|printpdf|qrcode'
+
       # Docs must build cleanly (including intra-doc links); -D warnings fails the
       # job on any rustdoc warning.
       - name: Build docs (deny warnings)
