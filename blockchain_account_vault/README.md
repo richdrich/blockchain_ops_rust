@@ -91,7 +91,7 @@ Argon2id (64 MiB, 3 passes) stretches the password into a 256-bit key, and AES-2
 
 ## Sealed stores
 
-`sealed_store` seals a payload (a state file, say) under a random data key, and keeps that key wrapped once per **slot**. A slot is a label and a `hardware_keystore` wrapping: a password (`SoftwareWrapper`), a secret a platform store hands over (`SecretWrapper`), and in later versions a key held in hardware. Any one slot opens the store.
+`sealed_store` seals a payload (a state file, say) under a random data key, and keeps that key wrapped once per **slot**. A slot is a label and a `blockchain_keystore` wrapping: a password (`SoftwareWrapper`), a secret a platform store hands over (`SecretWrapper`), and in later versions a key held in hardware. Any one slot opens the store.
 
 - `SealedStore::seal(payload, &[("password", &pw), ("device", &dev)])` returns the store and its data key.
 - `open(label, wrapper)` opens with a named slot; `open_any(wrapper)` tries every slot made by that wrapper's backend. A slot whose key is unavailable now (a locked device, say) returns that error rather than being skipped.
@@ -102,7 +102,7 @@ Two keys come from the data key with HKDF-SHA256: one encrypts the payload with 
 
 ```text
 version (1) | slot count (1) | slots | header MAC (32) | nonce (12) | ciphertext (payload + 16 tag)
-slot: label length (1) | label (UTF-8) | record length (2) | hardware_keystore record
+slot: label length (1) | label (UTF-8) | record length (2) | blockchain_keystore record
 ```
 
 `recovery::recovery_secret(mnemonic, label)` turns an Algorand 25-word phrase into a 32-byte slot secret (HKDF-SHA256 over the seed, with the label as info), for a recovery slot that opens a store copied to a new device. Use a different label for each purpose.

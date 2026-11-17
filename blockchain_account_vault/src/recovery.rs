@@ -4,7 +4,7 @@
 //! with the account's 25-word phrase, so a store copied to a new device (for
 //! example from a backup) opens once the user enters the phrase. This module
 //! turns the phrase into the 32-byte secret for a
-//! [`hardware_keystore::secret::SecretWrapper`].
+//! [`blockchain_keystore::secret::SecretWrapper`].
 
 use anyhow::{Result, bail};
 use hkdf::Hkdf;

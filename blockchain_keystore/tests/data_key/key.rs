@@ -1,6 +1,6 @@
 //! The data key itself: generation and comparison.
 
-use hardware_keystore::{DATA_KEY_LEN, DataKey};
+use blockchain_keystore::{DATA_KEY_LEN, DataKey};
 
 #[test]
 fn generated_keys_differ() {

@@ -1,10 +1,10 @@
 //! Fixed vectors for the record format. The records below were written once and are never
-//! regenerated: if a change to `hardware_keystore` stops them opening, or makes the same inputs
+//! regenerated: if a change to `blockchain_keystore` stops them opening, or makes the same inputs
 //! give different bytes, it has broken every record already stored.
 
-use hardware_keystore::secret::SecretWrapper;
-use hardware_keystore::software::{Argon2Cost, SoftwareWrapper};
-use hardware_keystore::{DataKey, KeyWrapper, SecurityLevel, WrappedKey};
+use blockchain_keystore::secret::SecretWrapper;
+use blockchain_keystore::software::{Argon2Cost, SoftwareWrapper};
+use blockchain_keystore::{DataKey, KeyWrapper, SecurityLevel, WrappedKey};
 
 const DATA_KEY: [u8; 32] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,

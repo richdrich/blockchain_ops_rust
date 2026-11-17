@@ -1,7 +1,9 @@
 //! The software backend: Argon2id over a password.
 
-use hardware_keystore::software::{Argon2Cost, MAX_MEMORY_KIB, SoftwareWrapper};
-use hardware_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel, WrappedKey};
+use blockchain_keystore::software::{Argon2Cost, MAX_MEMORY_KIB, SoftwareWrapper};
+use blockchain_keystore::{
+    BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel, WrappedKey,
+};
 
 fn wrapper(password: &str) -> SoftwareWrapper {
     SoftwareWrapper::with_cost(password, Argon2Cost::INSECURE_MINIMUM)

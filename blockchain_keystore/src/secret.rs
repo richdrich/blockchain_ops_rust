@@ -20,7 +20,9 @@ use crate::wrapper::{KeyWrapper, SecurityLevel};
 pub const SECRET_LEN: usize = 32;
 
 /// The HKDF info string. It separates the wrapping key from any other key the
-/// caller derives from the same secret.
+/// caller derives from the same secret. It keeps the crate's original name
+/// (`hardware_keystore`) because it is part of the record format: changing it
+/// would stop every existing secret-wrapper record opening.
 const HKDF_INFO: &[u8] = b"hardware_keystore secret wrapper v1";
 
 /// Wraps a data key under a key derived with HKDF-SHA256 from a secret the

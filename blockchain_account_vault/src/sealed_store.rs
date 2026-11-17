@@ -1,6 +1,6 @@
 //! A payload sealed under one data key, with that key wrapped once per slot.
 //!
-//! Each slot is a [`hardware_keystore::KeyWrapper`] wrapping of the data key
+//! Each slot is a [`blockchain_keystore::KeyWrapper`] wrapping of the data key
 //! with a label, so a password, a key held by the platform and a recovery
 //! secret are all just slots. Any one slot opens the payload. Adding or
 //! removing a slot needs the data key (an opened store), and never re-encrypts
@@ -15,14 +15,14 @@
 //!
 //! ```text
 //! version (1) | slot count (1) | slots | header MAC (32) | nonce (12) | ciphertext (payload + 16 tag)
-//! slot: label length (1) | label (UTF-8) | record length (2) | hardware_keystore record
+//! slot: label length (1) | label (UTF-8) | record length (2) | blockchain_keystore record
 //! ```
 
 use std::fmt;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use hardware_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, WrappedKey};
+use blockchain_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, WrappedKey};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::RngCore;

@@ -1,7 +1,7 @@
 //! The wrapped-key record layout: parsing and rejecting bad records.
 
-use hardware_keystore::secret::SecretWrapper;
-use hardware_keystore::{
+use blockchain_keystore::secret::SecretWrapper;
+use blockchain_keystore::{
     BackendId, DataKey, KeyWrapper, KeystoreError, RECORD_VERSION, SecurityLevel, WrappedKey,
 };
 

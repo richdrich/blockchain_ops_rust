@@ -1,8 +1,10 @@
 //! The secret backend: HKDF over a caller-supplied secret.
 
-use hardware_keystore::secret::SecretWrapper;
-use hardware_keystore::software::{Argon2Cost, SoftwareWrapper};
-use hardware_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel, WrappedKey};
+use blockchain_keystore::secret::SecretWrapper;
+use blockchain_keystore::software::{Argon2Cost, SoftwareWrapper};
+use blockchain_keystore::{
+    BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel, WrappedKey,
+};
 
 const SECRET: [u8; 32] = [0x42; 32];
 

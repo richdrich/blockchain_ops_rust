@@ -2,9 +2,9 @@
 //! regenerated: if a change stops it opening, it has broken every store already written.
 
 use blockchain_account_vault::sealed_store::SealedStore;
-use hardware_keystore::SecurityLevel;
-use hardware_keystore::secret::SecretWrapper;
-use hardware_keystore::software::SoftwareWrapper;
+use blockchain_keystore::SecurityLevel;
+use blockchain_keystore::secret::SecretWrapper;
+use blockchain_keystore::software::SoftwareWrapper;
 
 const PAYLOAD: &[u8] = b"sealed_store fixed vector payload";
 const SECRET: [u8; 32] = [0xa5; 32];
@@ -49,7 +49,7 @@ fn round_trips_its_bytes() {
 #[test]
 #[ignore]
 fn print_a_new_vector() {
-    use hardware_keystore::software::Argon2Cost;
+    use blockchain_keystore::software::Argon2Cost;
     let password = SoftwareWrapper::with_cost(PASSWORD, Argon2Cost::INSECURE_MINIMUM);
     let device = SecretWrapper::new(&SECRET, SecurityLevel::Software);
     let (store, _) =
