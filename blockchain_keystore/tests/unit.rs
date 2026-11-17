@@ -1,4 +1,4 @@
-//! `unit` test target: every hardware_keystore test. None needs an external service.
+//! `unit` test target: every blockchain_keystore test. None needs an external service.
 //!
 //! Each file under `tests/<module>/` mirrors a `src` module and is included here as a submodule, so
 //! the whole bucket builds as one test binary (after the blockchain_account_vault pattern).

@@ -1,7 +1,7 @@
 //! The `test-support` fake: real wrapping, plus a switch for "not available now".
 
-use hardware_keystore::fake::FakeWrapper;
-use hardware_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel};
+use blockchain_keystore::fake::FakeWrapper;
+use blockchain_keystore::{BackendId, DataKey, KeyWrapper, KeystoreError, SecurityLevel};
 
 #[test]
 fn round_trips_while_available() {

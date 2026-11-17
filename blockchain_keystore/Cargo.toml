@@ -1,12 +1,12 @@
 [package]
-name = "hardware_keystore"
+name = "blockchain_keystore"
 version = "0.9.7"
 edition = "2024"
 description = "Wrap and unwrap a data key under a password, a caller-supplied secret, or (later) a key held by platform hardware."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/richdrich/blockchain_ops_rust"
 homepage = "https://github.com/richdrich/blockchain_ops_rust"
-documentation = "https://docs.rs/hardware_keystore"
+documentation = "https://docs.rs/blockchain_keystore"
 readme = "README.md"
 keywords = ["encryption", "keys", "keychain", "tpm", "wrapping"]
 categories = ["cryptography"]
@@ -36,7 +36,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 [dev-dependencies]
 # the unit tests use the `test-support` fake, so they depend on this crate with
 # that feature turned on.
-hardware_keystore = { path = ".", features = ["test-support"] }
+blockchain_keystore = { path = ".", features = ["test-support"] }
 # the fixed test vectors are written as hex.
 hex = "0.4"
 

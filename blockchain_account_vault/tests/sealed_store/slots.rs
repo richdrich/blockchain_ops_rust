@@ -1,10 +1,10 @@
 //! `sealed_store`: sealing, opening with each slot type, slot changes, and tampering.
 
 use blockchain_account_vault::sealed_store::{SealedStore, SealedStoreError};
-use hardware_keystore::fake::FakeWrapper;
-use hardware_keystore::secret::SecretWrapper;
-use hardware_keystore::software::{Argon2Cost, SoftwareWrapper};
-use hardware_keystore::{DataKey, KeyWrapper, KeystoreError, SecurityLevel};
+use blockchain_keystore::fake::FakeWrapper;
+use blockchain_keystore::secret::SecretWrapper;
+use blockchain_keystore::software::{Argon2Cost, SoftwareWrapper};
+use blockchain_keystore::{DataKey, KeyWrapper, KeystoreError, SecurityLevel};
 
 const PAYLOAD: &[u8] = b"contacts, blocks and messages";
 

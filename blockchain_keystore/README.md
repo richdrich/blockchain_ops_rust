@@ -1,4 +1,4 @@
-# hardware_keystore
+# blockchain_keystore
 
 Wrap and unwrap a 32-byte data key under a password, a secret the caller supplies, or (in later versions) a key held by platform hardware.
 
@@ -48,8 +48,8 @@ Every wrap uses a fresh random nonce, and the software backend a fresh random sa
 ## Example
 
 ```rust
-use hardware_keystore::{DataKey, KeyWrapper, WrappedKey};
-use hardware_keystore::software::SoftwareWrapper;
+use blockchain_keystore::{DataKey, KeyWrapper, WrappedKey};
+use blockchain_keystore::software::SoftwareWrapper;
 
 let wrapper = SoftwareWrapper::new("a long passphrase");
 let data_key = DataKey::generate();
