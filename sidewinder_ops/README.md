@@ -44,8 +44,14 @@ let pending = client.status(&txid, false)?;
 
 - Speaks only the HTTP contract — no code dependency on the `sidewinder` crates. Neutral types on the
   boundary keep consumers decoupled from the node's internal versions.
-- Synchronous API over the async `reqwest` stack, driven on a per-call Tokio runtime — the same shape
-  `algo_ops` uses over algod.
+- Synchronous API over the async `reqwest` stack. Each client owns one `reqwest` client and the small
+  Tokio runtime that drives it, reused by every request.
+- A client connected to a discovered node (`SidewinderClient::connect`, or `connect_addrs` with a known
+  address list) tries every address the node advertises: native IPv6 first, then the NAT64-synthesised
+  form of its IPv4 address (Network Address Translation from IPv6 to IPv4; the prefix is discovered once
+  per client through RFC 7050 `ipv4only.arpa`, embedded per RFC 6052), then native IPv4. IPv6 is raced
+  against IPv4 after 300 ms (Happy Eyeballs). The node's pinned Algorand identity is checked whichever
+  address answers, so an IPv6-only client reaches a dual-stack or IPv4-only node.
 - Certificate and proof bytes are surfaced opaque and are **not** verified (a v0.0.2 non-goal).
 - The client owns the Sidewinder canonical MessagePack encoding, packs operation arguments with the
   shared `algo_ops::AppArg` (the Algorand application-arguments / Algorand Request for Comments 4,

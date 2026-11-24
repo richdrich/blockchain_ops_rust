@@ -12,7 +12,9 @@
 //! The node is addressed either **directly** by `--url`, or **resolved from the chain**: with
 //! `--app-id` and `--parent-chain` (an algod/indexer config) and no `--url`, the node's published
 //! endpoint is discovered on-chain for the given `--node-identity` — so an operator need not track each
-//! node's address.
+//! node's address. A resolved node is probed through the same address list a client uses
+//! ([`SidewinderClient::connect`]): native IPv6, then NAT64-synthesised IPv6 forms of its IPv4 address,
+//! then native IPv4 (blockchain_ops_rust#146).
 //!
 //! Usage:
 //! ```text
@@ -186,6 +188,13 @@ fn run() -> Result<ExitCode> {
                 "unreachable/handshake failed for {}: {error:#}",
                 args.node_identity
             );
+            // name every address that was tried, so an operator can tell which family failed.
+            if let Ok(tried) = client.candidate_addrs()
+                && !tried.is_empty()
+            {
+                let tried: Vec<String> = tried.iter().map(ToString::to_string).collect();
+                eprintln!("addresses tried, in order: {}", tried.join(", "));
+            }
             Ok(ExitCode::from(2))
         }
     }

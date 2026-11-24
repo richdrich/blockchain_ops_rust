@@ -14,6 +14,8 @@ mod health;
 mod misc;
 #[path = "client/mtls.rs"]
 mod mtls;
+#[path = "client/multi_address.rs"]
+mod multi_address;
 #[path = "client/node_status.rs"]
 mod node_status;
 #[path = "client/operations.rs"]
@@ -27,3 +29,8 @@ mod submit;
 
 #[path = "transaction/build_sign.rs"]
 mod build_sign;
+
+#[path = "discovery.rs"]
+mod discovery;
+#[path = "nat64.rs"]
+mod nat64;
