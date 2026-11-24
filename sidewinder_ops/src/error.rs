@@ -161,5 +161,11 @@ impl SidewinderError {
             || s.contains("dns error")
             || s.contains("host unreachable")
             || s.contains("error sending request")
+            // a family or route the local network lacks — e.g. native IPv6 on an IPv4-only network,
+            // or IPv4 on an IPv6-only one (#146); another advertised address may still answer.
+            || s.contains("network is unreachable")
+            || s.contains("no route to host")
+            || s.contains("address not available")
+            || s.contains("address family not supported")
     }
 }

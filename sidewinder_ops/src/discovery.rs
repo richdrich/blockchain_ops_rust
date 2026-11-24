@@ -11,6 +11,7 @@
 //! local state ([`sw_identity_tls::EndpointResolver`]), so a client finds where the network is from the
 //! app id alone and reconnects to a rotated endpoint on the next resolve.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use algo_ops::AlgoOps;
@@ -66,13 +67,26 @@ pub struct DiscoveredNode {
 }
 
 impl DiscoveredNode {
-    /// The `https` base URL for this node's first advertised address (IPv4 preferred), or `None` if the
-    /// record carries no address. IPv6 is bracketed by [`std::net::SocketAddr`]'s formatting.
+    /// Every address this node advertises, IPv6 first then IPv4 — the native addresses a client tries
+    /// (see [`SidewinderClient::connect`](crate::SidewinderClient::connect), which also inserts any
+    /// NAT64-synthesised forms of the IPv4 address between the two).
+    pub fn addrs(&self) -> Vec<SocketAddr> {
+        let mut addrs = Vec::with_capacity(2);
+        if let Some(v6) = self.endpoint.v6 {
+            addrs.push(SocketAddr::V6(v6));
+        }
+        if let Some(v4) = self.endpoint.v4 {
+            addrs.push(SocketAddr::V4(v4));
+        }
+        addrs
+    }
+
+    /// The `https` base URL for this node's first advertised address — its IPv6 address if it has one,
+    /// else its IPv4 address — or `None` if the record carries no address. IPv6 is bracketed by
+    /// [`std::net::SocketAddr`]'s formatting. A single URL reaches only one address; to try every
+    /// advertised address, connect with [`SidewinderClient::connect`](crate::SidewinderClient::connect).
     pub fn base_url(&self) -> Option<String> {
-        self.endpoint
-            .socket_addrs()
-            .first()
-            .map(|addr| format!("https://{addr}"))
+        self.addrs().first().map(|addr| format!("https://{addr}"))
     }
 }
 

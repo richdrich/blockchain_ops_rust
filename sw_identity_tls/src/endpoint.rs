@@ -55,8 +55,9 @@ impl EndpointRecord {
         Self::new(v4, v6)
     }
 
-    /// The reachable socket addresses this record advertises, IPv4 first then IPv6 — the order a client
-    /// tries them in.
+    /// The reachable socket addresses this record advertises, IPv4 first then IPv6 (the record's field
+    /// order). A client does not dial them in this order: `sidewinder_ops` tries IPv6 first, then
+    /// NAT64-synthesised forms of the IPv4 address, then IPv4 (blockchain_ops_rust#146).
     pub fn socket_addrs(&self) -> Vec<SocketAddr> {
         let mut addrs = Vec::with_capacity(2);
         if let Some(v4) = self.v4 {
