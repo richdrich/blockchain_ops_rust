@@ -19,6 +19,7 @@ mod client;
 mod config;
 mod discovery;
 mod error;
+pub mod nat64;
 mod transaction;
 mod types;
 

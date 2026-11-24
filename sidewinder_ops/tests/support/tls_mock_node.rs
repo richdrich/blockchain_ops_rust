@@ -19,7 +19,7 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use sw_identity_tls::server::{IdentityClientVerifier, server_config};
 use sw_identity_tls::{StaticMembership, default_provider, generate};
 
-/// A loopback TLS node bound to an ephemeral port; shuts down on drop.
+/// A loopback TLS node (IPv4 or IPv6) bound to an ephemeral port; shuts down on drop.
 pub struct TlsMockNode {
     addr: SocketAddr,
     shutdown: Arc<AtomicBool>,
@@ -30,16 +30,32 @@ pub struct TlsMockNode {
 }
 
 impl TlsMockNode {
-    /// Start a node whose certificate is bound to `node_key`, accepting client certificates from the
-    /// `authorized_clients` identities (as API clients). Returns once the socket is bound.
+    /// Start a node on IPv4 loopback whose certificate is bound to `node_key`, accepting client
+    /// certificates from the `authorized_clients` identities (as API clients). Returns once the socket
+    /// is bound.
     pub fn start(node_key: &SigningKey, authorized_clients: Vec<String>) -> TlsMockNode {
+        Self::start_on("127.0.0.1:0", node_key, authorized_clients)
+    }
+
+    /// As [`start`](Self::start), but bound to IPv6 loopback (`[::1]`), for the multi-address tests
+    /// (#146). Panics if the host has no IPv6 loopback.
+    pub fn start_v6(node_key: &SigningKey, authorized_clients: Vec<String>) -> TlsMockNode {
+        Self::start_on("[::1]:0", node_key, authorized_clients)
+    }
+
+    /// Start a node bound to `bind` (an `ip:port` string; port `0` picks an ephemeral one).
+    pub fn start_on(
+        bind: &str,
+        node_key: &SigningKey,
+        authorized_clients: Vec<String>,
+    ) -> TlsMockNode {
         let cert = generate(node_key).expect("mint node identity certificate");
         let authority = Arc::new(StaticMembership::from_sets(Vec::new(), authorized_clients));
         let verifier = Arc::new(IdentityClientVerifier::new(authority, default_provider()));
         let config: Arc<ServerConfig> =
             Arc::new(server_config(cert, verifier).expect("build node server config"));
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind tls mock node");
+        let listener = TcpListener::bind(bind).expect("bind tls mock node");
         listener
             .set_nonblocking(true)
             .expect("set tls mock node nonblocking");
@@ -78,7 +94,7 @@ impl TlsMockNode {
         self.connections.load(Ordering::SeqCst)
     }
 
-    /// The `https` base URL of this node, for example `https://127.0.0.1:54321`.
+    /// The `https` base URL of this node, for example `https://127.0.0.1:54321` or `https://[::1]:54321`.
     pub fn base_url(&self) -> String {
         format!("https://{}", self.addr)
     }

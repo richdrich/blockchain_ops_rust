@@ -147,6 +147,9 @@ fn handle_connection(
     routes: &[Route],
     requests: &Arc<Mutex<Vec<RecordedRequest>>>,
 ) {
+    // an accepted socket inherits the listener's non-blocking mode on some platforms (macOS); a read
+    // before the request bytes arrive would then fail with `WouldBlock` and drop the connection.
+    stream.set_nonblocking(false).ok();
     let mut write_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,

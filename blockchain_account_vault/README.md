@@ -112,7 +112,7 @@ slot: label length (1) | label (UTF-8) | record length (2) | blockchain_keystore
 `cli` (the tool's argument parsing and password prompts) and `backup` (PDF backup pages: `pdf` and `vault::backup_page`) are on by default, so `cargo install` is unchanged. A library user that needs only `envelope`, `sealed_store`, `recovery`, `mnemonic`, `account`, `account_dir` and `vault` turns them off, and doesn't pull in `clap`, `rpassword`, `printpdf` or `qrcode`:
 
 ```
-blockchain_account_vault = { version = "0.9", default-features = false }
+blockchain_account_vault = { version = "0.10", default-features = false }
 ```
 
 ## The library

@@ -29,6 +29,19 @@ fn looks_unreachable_classifies_connection_errors() {
         "tcp connect error: Connection refused"
     ));
     assert!(SidewinderError::looks_unreachable("operation timed out"));
+    // a family or route the local network lacks (#146): another advertised address may answer.
+    assert!(SidewinderError::looks_unreachable(
+        "tcp connect error: Network is unreachable (os error 51)"
+    ));
+    assert!(SidewinderError::looks_unreachable(
+        "tcp connect error: No route to host (os error 65)"
+    ));
+    assert!(SidewinderError::looks_unreachable(
+        "Can't assign requested address: Address not available"
+    ));
+    assert!(SidewinderError::looks_unreachable(
+        "Address family not supported by protocol family"
+    ));
     // A served HTTP error is not an unreachable host.
     assert!(!SidewinderError::looks_unreachable("400 Bad Request"));
 }

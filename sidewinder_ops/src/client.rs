@@ -1,9 +1,13 @@
 //! The synchronous Sidewinder node client.
 //!
-//! [`SidewinderClient`] presents a blocking API over the async `reqwest` stack by driving each request
-//! on a fresh current-thread Tokio runtime ([`SidewinderClient::rt_block_on`]) — the same shape
-//! [`algo_ops::AlgoOps`] uses over algod. It implements [`SidewinderOps`], one method per endpoint of
-//! the reconciled `sidewinder_rest.yaml` v0.1.1 contract.
+//! [`SidewinderClient`] presents a blocking API over the async `reqwest` stack. Each client owns one
+//! `reqwest::Client` and the small Tokio runtime that drives it, built on first use and reused by every
+//! request, so pooled connections and the resolved address list survive between calls. It implements
+//! [`SidewinderOps`], one method per endpoint of the reconciled `sidewinder_rest.yaml` v0.1.1 contract.
+//!
+//! A client made from a discovered node ([`SidewinderClient::connect`]) tries **every** address the
+//! node advertises: native IPv6, then NAT64-synthesised forms of its IPv4 address (see
+//! [`crate::nat64`]), then native IPv4, racing IPv6 against IPv4 (Happy Eyeballs, RFC 8305).
 
 use crate::config::SidewinderConfig;
 use crate::error::SidewinderError;
@@ -17,10 +21,12 @@ use anyhow::{Result, anyhow};
 use reqwest::Method;
 use rustls::ClientConfig;
 use serde::de::DeserializeOwned;
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::discovery::{DiscoveredNode, DiscoveryConfig, identity_key, pinned_client_config};
+use crate::nat64::{self, Nat64Resolver, SystemNat64Resolver};
 
 /// The client-facing surface of a Sidewinder node.
 ///
@@ -74,6 +80,62 @@ pub struct SidewinderClient {
     // (which pins the node's identity and presents ours) and no bearer token is sent. `None` is the
     // default plaintext + bearer surface, byte-for-byte as before.
     tls: Option<Arc<ClientConfig>>,
+    // `Some` when the node is reached through its advertised socket addresses (native, IPv6 first)
+    // rather than through `config.base_url`; the transport then dials every candidate in turn.
+    node_addrs: Option<Vec<SocketAddr>>,
+    // looks up `ipv4only.arpa` to discover the network's NAT64 prefix (RFC 7050), once per client.
+    nat64: Arc<dyn Nat64Resolver>,
+    // the HTTP client and its runtime, built on first use and reused by every request.
+    transport: Mutex<Option<Arc<HttpTransport>>>,
+}
+
+// The host name requests to an address-list node are sent to. It is never looked up in DNS: reqwest
+// maps it to the node's candidate addresses (`resolve_to_addrs`), so the connector races them. It is
+// safe as the TLS server name because the identity verifier ignores the name and pins the node's
+// Algorand identity instead. `.invalid` (RFC 2606) can never be a real name.
+const NODE_HOST: &str = "sw-node.invalid";
+
+// The whole budget for establishing a connection to an address-list node, shared across its candidate
+// addresses, so a black-holed address cannot stall the request for the operating system's TCP timeout.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+// One `SidewinderClient`'s HTTP transport: a reqwest client plus the runtime its connection pool lives
+// on (a pooled connection is bound to the runtime that opened it, so the two are kept together).
+struct HttpTransport {
+    // `Option` only so `Drop` can take it and shut it down without blocking.
+    runtime: Option<tokio::runtime::Runtime>,
+    http: reqwest::Client,
+    // the URL every request path is appended to.
+    base: String,
+    // the addresses an address-list node is dialled at, in order; empty for a base-URL transport.
+    candidates: Vec<SocketAddr>,
+}
+
+impl HttpTransport {
+    // Drive `fut` to completion on this transport's runtime. A caller already inside a Tokio runtime
+    // cannot block on another from its own thread, so the wait moves to a scoped thread.
+    fn block_on<T: Send>(&self, fut: impl std::future::Future<Output = T> + Send) -> Result<T> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Err(anyhow!("the HTTP transport's runtime has shut down"));
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return std::thread::scope(|s| {
+                s.spawn(|| runtime.block_on(fut))
+                    .join()
+                    .map_err(|_| anyhow!("transport block_on thread panicked"))
+            });
+        }
+        Ok(runtime.block_on(fut))
+    }
+}
+
+impl Drop for HttpTransport {
+    // A runtime dropped inside an async context panics; shutting it down in the background never does.
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 // Number of retries and backoff base for unreachable-host errors — mirrors the algo_ops policy.
@@ -158,6 +220,9 @@ impl SidewinderClient {
             algo,
             config,
             tls: None,
+            node_addrs: None,
+            nat64: Arc::new(SystemNat64Resolver),
+            transport: Mutex::new(None),
         }
     }
 
@@ -171,6 +236,9 @@ impl SidewinderClient {
             // the bearer token is unused on the mutual-TLS transport; keep an empty one.
             config: SidewinderConfig::new(base_url, String::new()),
             tls: Some(tls),
+            node_addrs: None,
+            nat64: Arc::new(SystemNat64Resolver),
+            transport: Mutex::new(None),
         }
     }
 
@@ -179,16 +247,53 @@ impl SidewinderClient {
     /// identity or the handshake fails. This client presents its own identity (this account's key), so a
     /// node running inbound-client mutual TLS authorizes it as a client. Errors if `node` published no
     /// reachable address, or the client identity/TLS config cannot be built.
+    ///
+    /// Every address the node advertises is tried ([`connect_addrs`](Self::connect_addrs)): native
+    /// IPv6, then NAT64-synthesised IPv6 forms of its IPv4 address, then native IPv4.
     pub fn connect(algo: AlgoOps, node: &DiscoveredNode) -> Result<Self> {
-        let base_url = node.base_url().ok_or_else(|| {
-            anyhow!(
-                "resolved node {} published no reachable endpoint",
-                node.identity
-            )
-        })?;
+        Self::connect_addrs(algo, &node.addrs(), &node.identity)
+    }
+
+    /// Connect over identity-bound mutual TLS to a node reachable at any of `addrs`, pinning
+    /// `node_identity` (an Algorand address). Makes no parent-chain call.
+    ///
+    /// The client tries native IPv6 addresses first, then — when the network has NAT64 (discovered once
+    /// per client through RFC 7050, see [`crate::nat64`]) — the synthesised IPv6 form of each IPv4
+    /// address, then native IPv4, racing the IPv6 attempts against IPv4 after 300 ms (Happy Eyeballs).
+    /// The pinned identity is checked whichever address answers. Errors if `addrs` is empty, or the
+    /// client identity/TLS config cannot be built.
+    pub fn connect_addrs(algo: AlgoOps, addrs: &[SocketAddr], node_identity: &str) -> Result<Self> {
+        let native = nat64::ordered_candidates(addrs, &[]);
+        let Some(first) = native.first() else {
+            return Err(anyhow!(
+                "node {node_identity} published no reachable endpoint"
+            ));
+        };
         let own = identity_key(&algo)?;
-        let tls = pinned_client_config(&own, &node.identity)?;
-        Ok(Self::mtls(algo, base_url, Arc::new(tls)))
+        let tls = pinned_client_config(&own, node_identity)?;
+        // `config.base_url` names the first native address for display; requests use the address list.
+        let mut client = Self::mtls(algo, format!("https://{first}"), Arc::new(tls));
+        client.node_addrs = Some(native);
+        Ok(client)
+    }
+
+    /// Replace the resolver used to discover the network's NAT64 prefix (the default is the platform
+    /// resolver, [`SystemNat64Resolver`]). The lookup happens once, when the first request builds the
+    /// transport, so set this before sending. Useful to inject a known prefix, or none.
+    pub fn with_nat64_resolver(mut self, resolver: Arc<dyn Nat64Resolver>) -> Self {
+        self.nat64 = resolver;
+        self
+    }
+
+    /// The addresses this client dials, in order — native IPv6, NAT64-synthesised IPv6, native IPv4 —
+    /// for a client made by [`connect`](Self::connect) or [`connect_addrs`](Self::connect_addrs);
+    /// empty for a client addressed by a single base URL. Builds the transport (and so runs NAT64
+    /// discovery) if no request has yet.
+    pub fn candidate_addrs(&self) -> Result<Vec<SocketAddr>> {
+        if self.node_addrs.is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(self.transport()?.candidates.clone())
     }
 
     /// Connect to a node at a **known** `base_url` (an `https://` URL) over identity-bound mutual TLS,
@@ -274,33 +379,92 @@ impl SidewinderClient {
         self.submit(&signed.bytes)
     }
 
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.config.trimmed_base(), path)
+    // The client's transport, built on first use: one reqwest client (and its runtime) for every
+    // request, so pooled connections, the NAT64 prefix and the candidate list are reused.
+    fn transport(&self) -> Result<Arc<HttpTransport>> {
+        let mut slot = self
+            .transport
+            .lock()
+            .map_err(|_| anyhow!("the HTTP transport lock is poisoned"))?;
+        if let Some(transport) = slot.as_ref() {
+            return Ok(Arc::clone(transport));
+        }
+        let transport = Arc::new(self.build_transport()?);
+        *slot = Some(Arc::clone(&transport));
+        Ok(transport)
     }
 
-    // Run an async future on a fresh current-thread Tokio runtime, handling the nested-runtime case
-    // (a caller already inside a runtime) by spawning a scoped thread. Mirrors `AlgoOps::rt_block_on`.
-    fn rt_block_on<T: Send>(&self, fut: impl std::future::Future<Output = T> + Send) -> Result<T> {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return std::thread::scope(|s| {
-                let handle = s.spawn(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("failed to build temporary tokio runtime");
-                    rt.block_on(fut)
-                });
-                handle
-                    .join()
-                    .map_err(|_| anyhow!("rt_block_on thread panicked"))
-            });
+    // Build the reqwest client and the runtime it runs on. For an address-list node this discovers the
+    // NAT64 prefix (only when there is an IPv4 address worth synthesising) and maps `NODE_HOST` to the
+    // ordered candidates, so hyper-util's connector races IPv6 against IPv4.
+    fn build_transport(&self) -> Result<HttpTransport> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(tls) = &self.tls {
+            // mutual-TLS transport: hand reqwest the preconfigured config (node-identity pinning + our
+            // client certificate); the node authenticates us at the handshake, not via a token.
+            builder = builder.tls_backend_preconfigured((**tls).clone());
         }
-
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let (base, candidates) = match &self.node_addrs {
+            Some(addrs) => {
+                let wants_nat64 = addrs.iter().any(|addr| match addr {
+                    SocketAddr::V4(v4) => nat64::synthesisable(*v4.ip()),
+                    SocketAddr::V6(_) => false,
+                });
+                let prefixes = if wants_nat64 {
+                    nat64::discover_prefixes(self.nat64.as_ref())
+                } else {
+                    Vec::new()
+                };
+                let candidates = nat64::ordered_candidates(addrs, &prefixes);
+                tracing::debug!(
+                    "sidewinder node candidates {:?} (NAT64 prefixes {:?})",
+                    candidates,
+                    prefixes
+                );
+                // no port in the URL, so each candidate keeps its own (a node's IPv4 and IPv6 ports
+                // are independent); no proxy, which could not resolve the synthetic host.
+                builder = builder
+                    .resolve_to_addrs(NODE_HOST, &candidates)
+                    .no_proxy()
+                    .connect_timeout(CONNECT_TIMEOUT);
+                (format!("https://{NODE_HOST}"), candidates)
+            }
+            None => (self.config.trimmed_base().to_string(), Vec::new()),
+        };
+        // one worker thread keeps the connection pool's background tasks running between calls; any
+        // thread outside a runtime can block on it.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("sidewinder-client")
             .enable_all()
             .build()
             .map_err(|e| anyhow!("failed to build tokio runtime: {e}"))?;
-        Ok(rt.block_on(fut))
+        // reqwest's client spawns nothing at build time, but build it inside the runtime anyway so any
+        // runtime-bound resource it creates belongs to the runtime that will drive it.
+        let http = {
+            let _guard = runtime.enter();
+            builder
+                .build()
+                .map_err(|e| anyhow!("failed to build HTTP client: {}", cause_chain(&e)))?
+        };
+        Ok(HttpTransport {
+            runtime: Some(runtime),
+            http,
+            base,
+            candidates,
+        })
+    }
+
+    // Where this client sends requests, for error messages: the candidate addresses of an address-list
+    // node, else the base URL.
+    fn target(&self) -> String {
+        match &self.node_addrs {
+            Some(addrs) => {
+                let listed: Vec<String> = addrs.iter().map(SocketAddr::to_string).collect();
+                listed.join(", ")
+            }
+            None => self.config.trimmed_base().to_string(),
+        }
     }
 
     // Send one request, returning `(status, body)` for any served HTTP response. Only network-level
@@ -314,23 +478,15 @@ impl SidewinderClient {
         authenticated: bool,
         timeout: Option<Duration>,
     ) -> std::result::Result<(u16, Vec<u8>), SendFailure> {
-        let url = self.url(path);
+        let transport = self.transport().map_err(SendFailure::Local)?;
+        let url = format!("{}{}", transport.base, path);
         let token = self.config.token.clone();
-        let tls = self.tls.clone();
+        let mutual_tls = self.tls.is_some();
+        let http = transport.http.clone();
         let fut = async move {
-            let mut builder = reqwest::Client::builder();
-            if let Some(tls) = &tls {
-                // mutual-TLS transport: hand reqwest the preconfigured config (node-identity pinning +
-                // our client certificate); the node authenticates us at the handshake, not via a token.
-                builder = builder.tls_backend_preconfigured((**tls).clone());
-            }
-            let mutual_tls = tls.is_some();
-            let client = builder.build().map_err(|e| {
-                SendFailure::Local(anyhow!("failed to build HTTP client: {}", cause_chain(&e)))
-            })?;
-            let mut req = client.request(method, &url);
+            let mut req = http.request(method, &url);
             // bearer auth applies only to the plaintext transport; mutual TLS is the authentication.
-            if authenticated && tls.is_none() {
+            if authenticated && !mutual_tls {
                 req = req.bearer_auth(&token);
             }
             if let Some(bytes) = body {
@@ -355,7 +511,7 @@ impl SidewinderClient {
                 .to_vec();
             Ok::<(u16, Vec<u8>), SendFailure>((status, bytes))
         };
-        self.rt_block_on(fut).map_err(SendFailure::Local)?
+        transport.block_on(fut).map_err(SendFailure::Local)?
     }
 
     // The error for a node that refused this client's identity: says the node was reached, names the
@@ -372,7 +528,7 @@ impl SidewinderClient {
                  client there. Check that the account is opted in to the node's membership \
                  application and has the client permission bit set (a newly set bit is only seen at \
                  the node's next membership poll). Cause: {chain}",
-                self.config.trimmed_base()
+                self.target()
             ),
         )
     }
